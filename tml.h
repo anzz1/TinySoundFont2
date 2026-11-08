@@ -1,4 +1,4 @@
-/* TinyMidiLoader2 - v2.001 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
+/* TinyMidiLoader2 - v2.002 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TML_IMPLEMENTATION
@@ -429,7 +429,7 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 	for (t = tracks; t != tracksEnd;)
 	{
 		unsigned char track_header[8];
-		int track_length, is_track;
+		int track_length, is_track, got;
 		if (stream->read(stream->data, track_header, 8) != 8) { TML_WARN("Unexpected end of file"); break; }
 		is_track = (track_header[0] == 'M' && track_header[1] == 'T' && track_header[2] == 'r' && track_header[3] == 'k');
 		if (!is_track && (track_header[0] < ' ' || track_header[0] > '~')) { TML_WARN("Invalid MTrk header"); break; }
@@ -443,7 +443,14 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 			trackbuf = (unsigned char*)TML_MALLOC(trackbufsize = track_length);
 			if (!trackbuf) { TML_ERROR("Out of memory"); trackbufsize = 0; break; }
 		}
-		if (stream->read(stream->data, trackbuf, track_length) != track_length) { TML_WARN("Unexpected end of file"); break; }
+		if ((got = stream->read(stream->data, trackbuf, track_length)) != track_length)
+		{
+			// a truncated file: the part of the last track that was read still plays
+			TML_WARN("Unexpected end of file");
+			if (!is_track || got <= 0) break;
+			track_length = got;
+			tracksEnd = t + 1;
+		}
 		if (!is_track) { TML_WARN("Skipping an unknown chunk"); continue; }
 
 		t->Idx = p.message_count;

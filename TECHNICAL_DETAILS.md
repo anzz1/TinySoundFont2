@@ -30,10 +30,13 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
 - **Volume envelope:**
   - The attack is linear in amplitude, so it looks convex on a dB scale.
   - Decay and release are linear in dB. Their times are the time for a 100 dB drop (8.1.2 #36, #38).
+  - Release: the release takes at least 10 ms (`TSF_FASTRELEASETIME`), so the default release of 1 ms (−12000 timecents) and other short ones don't click at a note off. Without it, a 1 ms release adds high-frequency energy at the note off that grows as the render block shrinks: 2.5 dB more than a 10 ms release with the default 64-sample block, 17 dB more (a tick on every note off of a sustained sound) with an 8-sample block. The modulation envelope's release stays exact.
   - The voice ends once the envelope is 100 dB below full scale (9.1.7), including when it would otherwise sustain at that level. A released voice also ends once its total gain (envelope plus attenuation, allowing for the modulation LFO's loudest point) is 100 dB down.
 - **Modulation envelope:**
   - The attack is convex (8.1.2 #26), using the same curve as the convex modulator source.
   - Decay and release are linear, and their times are for a full-scale change. A release from 50% therefore takes half the release time (8.1.2 #30).
+- **Times** are converted from timecents exactly: the minimum and default of −12000 is 1 ms (8.1.3, 8.5), so the default attack ramps in over 1 ms instead of starting with a step.
+  - **−32768 means zero time** for the delays (both LFOs and both envelopes), attacks and holds, as 8.1.2 says by convention. It counts as such when the preset and instrument values and the modulators add up to −32768 or less (the hold after its key number scaling). Decay and release have no such convention, so −32768 there is clamped to 1 ms.
 - **Key number scaling** of hold and decay is applied in timecents before the conversion to seconds.
 
 ### Filter
@@ -151,6 +154,7 @@ Creative never published the full unit table; the conversions follow the AWE32 p
   - RPN 5: modulation depth range. The default is 50 cents, and it scales the modulation wheel's pitch modulators.
   - The RPN null value (127/127) is respected.
 - **Data increment/decrement (CC96/97):** steps the selected parameter by one LSB step, or by one semitone for coarse tuning (RP-018). The pitch bend range (RPN 0) steps by one cent and carries between its cents (LSB, 0–99) and semitones (MSB).
+- **Minimum note length:** a note off that comes less than 10 ms after its note on (`TSF_MIN_NOTE_LENGTH`) is carried out when the note has played 10 ms, a deviation from the spec. The spec releases at once. Otherwise a note shorter than its delay and attack, such as a drum hit with the note off at the same time as the note on, would release from (nearly) zero and not be heard. Pedals, All Notes Off and the other note ends work the same way; All Sound Off and the quick fades are immediate.
 - **All Notes Off:** CC123 releases the notes, but the pedals keep holding them. The mode messages CC124–127 also act as All Notes Off (MIDI 1.0).
 - **All Sound Off:** CC120 ends the notes with a 10 ms fade instead of a hard cut, to avoid clicks.
 - **Reset All Controllers (CC121)** follows RP-015:
@@ -230,6 +234,7 @@ With `stb_vorbis.c` included before `tsf.h`, two compressed formats load as well
   - Set it to 0 for 1:1 centibels as the SoundFont 2.01 spec defines; fonts made for the spec-correct behavior need that.
   - A font can be converted from one behavior to the other by scaling its attenuation values by 2.5 or 0.4.
 - **`TSF_RENDER_EFFECTSAMPLEBLOCK` (default 64):** the control-rate block size, a power of two up to 256 (the effects run in 256-sample blocks). Lower is more accurate, higher uses less CPU: 8 costs about twice the CPU of 64, 256 saves 10–15%.
+- **`TSF_MIN_NOTE_LENGTH` (default 0.01 seconds):** the minimum note length (0 turns it off).
 - **`TSF_RENDER_SHORTBUFFERBLOCK` (default 512):** the size in floats of the stack buffer `tsf_render_short` converts through. It must be a multiple of 2 × `TSF_RENDER_EFFECTSAMPLEBLOCK` (one stereo block), so `tsf_render_short` renders exactly like `tsf_render_float`. Smaller saves stack on small platforms; above 512 it isn't faster.
 - **`WORDS_BIGENDIAN`:** define it on a big-endian machine, so the little-endian SoundFont data is byte-swapped while loading. GCC and Clang define it automatically.
 - **`TSF_MAX_CHANNELS` (default 4096):** the highest channel number + 1 that the channel functions accept (256 MIDI ports of 16 channels). It also keeps the channel allocation from overflowing on 32-bit systems.
