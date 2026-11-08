@@ -90,25 +90,23 @@ typedef struct tml_message
 	// - program for TML_PROGRAM_CHANGE messages
 	// - channel_pressure for TML_CHANNEL_PRESSURE messages
 	// - pitch_bend for TML_PITCH_BEND messages
+	#ifdef _MSC_VER
+	#pragma warning(push)
+	#pragma warning(disable:4201) //nonstandard extension used: nameless struct/union
+	#elif defined(__GNUC__)
+	#pragma GCC diagnostic push
+	#pragma GCC diagnostic ignored "-Wpedantic" //ISO C99/C++ prohibit anonymous structs and unions
+	#endif
 	union
 	{
-		#ifdef _MSC_VER
-		#pragma warning(push)
-		#pragma warning(disable:4201) //nonstandard extension used: nameless struct/union
-		#elif defined(__GNUC__)
-		#pragma GCC diagnostic push
-		#pragma GCC diagnostic ignored "-Wpedantic" //ISO C++ prohibits anonymous structs
-		#endif
-
 		struct { union { char key, control, program, channel_pressure; }; union { char velocity, key_pressure, control_value; }; };
 		struct { unsigned short pitch_bend; };
-
-		#ifdef _MSC_VER
-		#pragma warning( pop )
-		#elif defined(__GNUC__)
-		#pragma GCC diagnostic pop
-		#endif
 	};
+	#ifdef _MSC_VER
+	#pragma warning( pop )
+	#elif defined(__GNUC__)
+	#pragma GCC diagnostic pop
+	#endif
 
 	// The pointer to the next message in time following this event
 	struct tml_message* next;

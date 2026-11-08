@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.012 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.013 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -634,7 +634,7 @@ static double tsf_timecents2Secsd(double timecents) { return TSF_EXP(timecents *
 static float tsf_cents2Hertz(float cents) { return 8.176f * TSF_EXPF(cents * (float)TSF_LN2_1200); }
 static float tsf_decibelsToGain(float db) { return (db > -100.f ? TSF_EXPF(db * 0.11512925f) : 0); }
 #define TSF_FINITE(x) ((x) - (x) == 0.0f) // false for infinity and NaN, which the API's float arguments ignore
-static float tsf_gainToDecibels(float gain) { return (gain <= .00001f ? -100.f : 8.6858896f * TSF_LOGF(gain)); }
+static float tsf_gainToDecibels(float gain) { return (gain <= 1e-10f ? -200.f : 8.6858896f * TSF_LOGF(gain)); }
 
 static TSF_BOOL tsf_riffchunk_read(struct tsf_riffchunk* parent, struct tsf_riffchunk* chunk, struct tsf_stream* stream)
 {
@@ -1237,7 +1237,7 @@ static int tsf_decode_sf3_samples(const void* rawBuffer, float** pFloatBuffer, u
 		if (shdr->sampleType & 0x30) // compression flags (sometimes Vorbis flag): start and end are byte offsets, the loop is relative
 		{
 			int ok = 0;
-			if (shdr->end <= smplLength && shdr->start + 4 <= shdr->end && TSF_FourCCEquals(smplBuffer + shdr->start, "OggS"))
+			if (shdr->end <= smplLength && shdr->start < shdr->end && shdr->end - shdr->start >= 4 && TSF_FourCCEquals(smplBuffer + shdr->start, "OggS"))
 			{
 				tsf_u32 start = resNum;
 				ok = tsf_decode_ogg(smplBuffer + shdr->start, smplBuffer + shdr->end, &res, &resNum, &resMax, resInitial);
@@ -2396,7 +2396,7 @@ TSFDEF void tsf_set_output(tsf* f, enum TSFOutputMode outputmode, int samplerate
 
 TSFDEF void tsf_set_volume(tsf* f, float global_volume)
 {
-	tsf_set_global_gain(f, tsf_gainToDecibels(global_volume)); // -100 dB (silent) at or below 0.00001
+	tsf_set_global_gain(f, tsf_gainToDecibels(global_volume)); // -200 dB (silent) at or below 1e-10
 }
 
 TSFDEF int tsf_set_max_voices(tsf* f, int max_voices)
@@ -2522,8 +2522,8 @@ static int tsf_note_on_channel(tsf* f, int preset_index, int key, float vel, int
 		}
 
 		// Setup envelopes (from the modulated timecents).
-		tsf_voice_envelope_setup(&voice->ampenv, &voice->mr.ampenv, voice->key, voice->velocity, TSF_TRUE, f->outSampleRate);
-		tsf_voice_envelope_setup(&voice->modenv, &voice->mr.modenv, voice->key, voice->velocity, TSF_FALSE, f->outSampleRate);
+		tsf_voice_envelope_setup(&voice->ampenv, &voice->mr.ampenv, voice->key, midiVelocity, TSF_TRUE, f->outSampleRate);
+		tsf_voice_envelope_setup(&voice->modenv, &voice->mr.modenv, voice->key, midiVelocity, TSF_FALSE, f->outSampleRate);
 
 		// Setup LFO filters.
 		tsf_voice_lfo_setup(&voice->modlfo, tsf_timecents2Secs(voice->mr.delayModLFO), voice->mr.freqModLFO, f->outSampleRate);
@@ -2937,12 +2937,31 @@ static void tsf_channel_glide(tsf* f, const struct tsf_channel* c, float cents, 
 
 //a note whose key is down, or that sustain or hold 2 keeps (like a held key); a note kept by sostenuto stays as it is
 #define TSF_LEGATO_SOURCE(v) (v->playingPreset != -1 && v->playingChannel == channel && TSF_VOICE_KEYDOWN(v) && (!v->heldSustain || !v->sostenuto))
+//a note sounding for the (new) key: its key is down and no pedal keeps it
+#define TSF_KEY_NOTE(v) (v->playingPreset != -1 && v->playingChannel == channel && v->playingKey == key && TSF_VOICE_KEYDOWN(v) && !v->heldSustain)
 
-// Continue oldKey's voices at the new key without re-attacking, gliding from the CC84 key or with portamento on (false: none could)
-static TSF_BOOL tsf_channel_retarget(tsf* f, int channel, struct tsf_channel* c, int oldKey, int key)
+// Continue oldKey's voices at the new key without re-attacking, gliding from the CC84 key or with portamento on (false: none could).
+// A key outside one of their zones (another sample) releases them instead, *restartVel gets their velocity for a new note.
+static TSF_BOOL tsf_channel_retarget(tsf* f, int channel, struct tsf_channel* c, int oldKey, int key, float* restartVel)
 {
 	struct tsf_voice *v, *vEnd = (f->voices ? f->voices + f->voiceNum : TSF_NULL);
 	TSF_BOOL found = TSF_FALSE;
+	unsigned int playIndex = 0;
+	*restartVel = 0.0f;
+	for (v = f->voices; v != vEnd; v++)
+		if (TSF_LEGATO_SOURCE(v) && v->playingKey == oldKey && (key < v->region->lokey || key > v->region->hikey))
+		{
+			for (v = f->voices; v != vEnd; v++)
+				if (TSF_LEGATO_SOURCE(v) && v->playingKey == oldKey)
+				{
+					if (v->ampenv.midiVelocity > *restartVel * 127.0f) *restartVel = v->ampenv.midiVelocity * (1.0f / 127.0f);
+					tsf_voice_end(f, v);
+				}
+			return TSF_FALSE;
+		}
+	// oldKey's voices can be several notes (pedal-held, struck again) and the key its own: one key down is one note, else they would hang
+	for (v = f->voices; v != vEnd; v++)
+		if ((TSF_LEGATO_SOURCE(v) && v->playingKey == oldKey) || TSF_KEY_NOTE(v)) { if (v->playIndex > playIndex) playIndex = v->playIndex; }
 	for (v = f->voices; v != vEnd; v++)
 		if (TSF_LEGATO_SOURCE(v) && v->playingKey == oldKey)
 		{
@@ -2956,26 +2975,32 @@ static TSF_BOOL tsf_channel_retarget(tsf* f, int channel, struct tsf_channel* c,
 			tsf_voice_calcpitchratio(v, &v->mr, c->tuning);
 			found = TSF_TRUE;
 		}
-	if (found) c->portaKey = 255;
-	return found;
+	if (!found) return TSF_FALSE;
+	for (v = f->voices; v != vEnd; v++) if (TSF_KEY_NOTE(v)) v->playIndex = playIndex;
+	c->portaKey = 255;
+	return TSF_TRUE;
 }
 
 // Mono mode: a key pressed while another one is held continues that note's voices with the new pitch instead of starting new ones
-static TSF_BOOL tsf_channel_legato(tsf* f, int channel, struct tsf_channel* c, int key)
+static TSF_BOOL tsf_channel_legato(tsf* f, int channel, struct tsf_channel* c, int key, float* restartVel)
 {
 	struct tsf_voice *v, *vEnd = (f->voices ? f->voices + f->voiceNum : TSF_NULL), *last = TSF_NULL;
-	//the most recently started note that can continue
+	//the newest note whose key is down (sounding as the top key), else the newest one a pedal keeps
 	for (v = f->voices; v != vEnd; v++)
-		if (TSF_LEGATO_SOURCE(v) && (v->playingKey != key || v->heldSustain) && (!last || v->playIndex > last->playIndex)) last = v;
-	return (last && tsf_channel_retarget(f, channel, c, last->playingKey, key));
+		if (TSF_LEGATO_SOURCE(v) && (v->playingKey != key || v->heldSustain) &&
+			(!last || (last->heldSustain && !v->heldSustain) || (last->heldSustain == v->heldSustain && v->playIndex > last->playIndex))) last = v;
+	*restartVel = 0.0f;
+	return (last && tsf_channel_retarget(f, channel, c, last->playingKey, key, restartVel));
 }
 #undef TSF_LEGATO_SOURCE
+#undef TSF_KEY_NOTE
 
 TSFDEF int tsf_channel_note_on(tsf* f, int channel, int key, float vel)
 {
 	struct tsf_channels* cs;
 	struct tsf_channel* c;
 	int res;
+	float restartVel;
 	if (!(vel > 0.0f)) // also NaN
 	{
 		tsf_channel_note_off(f, channel, key);
@@ -2992,7 +3017,7 @@ TSFDEF int tsf_channel_note_on(tsf* f, int channel, int key, float vel)
 		if (i == c->monoCount) { if (i == sizeof(c->monoKeys)) i = 0; /* full: the oldest key is dropped */ else c->monoCount++; }
 		for (; i + 1 < c->monoCount; i++) c->monoKeys[i] = c->monoKeys[i + 1];
 		c->monoKeys[c->monoCount - 1] = (unsigned char)key;
-		if (tsf_channel_legato(f, channel, c, key)) { c->lastKey = (unsigned char)key; return 1; }
+		if (tsf_channel_legato(f, channel, c, key, &restartVel)) { c->lastKey = (unsigned char)key; return 1; } // else a new note
 		if (c->monoMode) // the same key pressed again restarts the note: one note per channel in mono mode
 		{
 			struct tsf_voice *v, *vEnd = (f->voices ? f->voices + f->voiceNum : TSF_NULL);
@@ -3001,7 +3026,7 @@ TSFDEF int tsf_channel_note_on(tsf* f, int channel, int key, float vel)
 		}
 	}
 	//CC84 (MIDI 1.0): a sounding note on the source key glides to the new key, no new voice
-	if (c->portaKey != 255 && c->portaKey != key && tsf_channel_retarget(f, channel, c, c->portaKey, key)) { c->lastKey = (unsigned char)key; return 1; }
+	if (c->portaKey != 255 && c->portaKey != key && tsf_channel_retarget(f, channel, c, c->portaKey, key, &restartVel)) { c->lastKey = (unsigned char)key; return 1; }
 	if (c->portaKey != 255 || c->cc[65] >= 64) //glide from the CC84 key (this note only, also with portamento off), or with portamento on from the previous note
 	{
 		int from = (c->portaKey != 255 ? c->portaKey : c->lastKey);
@@ -3028,7 +3053,12 @@ TSFDEF void tsf_channel_note_off(tsf* f, int channel, int key)
 		{
 			wasTop = (i + 1 == c->monoCount);
 			for (c->monoCount--; i < c->monoCount; i++) c->monoKeys[i] = c->monoKeys[i + 1];
-			if (wasTop && c->monoCount && tsf_channel_legato(f, channel, c, c->monoKeys[c->monoCount - 1])) return;
+			if (wasTop && c->monoCount) // the released key's own note continues at the held key
+			{
+				float restartVel;
+				if (tsf_channel_retarget(f, channel, c, key, c->monoKeys[c->monoCount - 1], &restartVel)) return;
+				if (restartVel > 0.0f) { tsf_channel_note_on(f, channel, c->monoKeys[c->monoCount - 1], restartVel); return; } // the held key is in another zone: a new note
+			}
 		}
 	}
 	for (; v != vEnd; v++)

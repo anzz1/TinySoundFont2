@@ -75,7 +75,7 @@ All of them are implemented except for two deliberate deviations:
 
 - **CC10 to pan** uses an amount of 500 instead of 1000. With 1000 the pan would already be fully left at CC10 = 32 and fully right at 96. FluidSynth uses and the SoundFont-Spec-Test file expects 500.
 - **Velocity to filter cutoff** is left out entirely:
-  - The SF2.01 version (amount source 0x0D02, a negative switch) is a mistake in the spec: it makes the cutoff jump at velocity 64.
+  - The SF2.01 version is a mistake in the spec: its amount source is described as a negative velocity switch (that would be 0x0D02, the listed 0x502 is a concave source), which makes the cutoff jump at velocity 64.
   - SF2.04 changed it to a plain linear modulator. But SF2.01 fonts don't know they need to cancel it, so adding it would darken them.
   - A font that wants velocity-dependent filtering can define the modulator itself.
 
@@ -148,7 +148,8 @@ Creative never published the full unit table; the conversions follow the AWE32 p
   - Mono mode (CC126/127) and the legato footswitch (CC68) make a key pressed while another is held continue the note at the new pitch, without restarting the envelope.
   - Releasing that key returns to the previously held key; up to 8 held keys are remembered. Releasing the legato footswitch (also by Reset All Controllers) outside mono mode forgets them, as the keys aren't tracked in poly mode.
   - In mono mode, pressing the key that is already sounding again restarts the note (the old one is released), so a channel keeps one note.
-  - A note kept by the sustain pedal or hold 2 after its key was let go counts as held too, so the next key continues it (one note sounds, as on a mono synth). A note kept by sostenuto stays as it is.
+  - A note kept by the sustain pedal or hold 2 after its key was let go counts as held too, so the next key continues it (one note sounds, as on a mono synth). A note kept by sostenuto stays as it is. When there are several such notes, the one whose key is down (the one sounding as the top key) continues; releasing the top key always returns that same note to the previous key.
+  - A key outside the key range of a zone of the sounding note (another sample of a multisampled instrument, or no zone at all) isn't played legato, as stretching the old sample would play the wrong sound: the note is released and the key starts as a new note (with portamento on, gliding from the previous key). Returning to a held key in another zone when the top key is released works the same way.
 - **Portamento:**
   - CC65 switches it on. Notes glide from the previous note.
   - CC84 (Portamento Control) gives the key the next note glides from, also while CC65 is off (MIDI 1.0). If a note on that key is sounding, it glides to the new key without re-attacking and no new voice starts.
@@ -231,7 +232,7 @@ With `stb_vorbis.c` included before `tsf.h`, two compressed formats load as well
 
 - **Out of range values:** channel numbers outside 0 to `TSF_MAX_CHANNELS` - 1 and preset indices that don't exist are rejected (the function returns 0). Controller values are clamped to 0–127, the pitch wheel to 0–16383, pressure to 0–127.
 - **Velocity:** 0, a negative value or NaN is a note off; any positive velocity plays, at MIDI velocity 1 or more.
-- **Float arguments:** an infinite or NaN pan, volume, pitch range, tuning or gain is ignored. The global gain is kept between −200 and +100 dB, so changing it back restores the sounding notes exactly. Effect settings are clamped (NaN as 0).
+- **Float arguments:** an infinite or NaN pan, volume, pitch range, tuning or gain is ignored. The global gain is kept between −200 and +100 dB, so changing it back restores the sounding notes exactly. A volume of 0 is −200 dB, so a muted channel stays silent under any global gain. Effect settings are clamped (NaN as 0).
 - **Pitch:** the playback speed is capped at 2^23 times the sample rate, so no tuning can overflow the 32.32 fixed-point position.
 
 ## Compile options
