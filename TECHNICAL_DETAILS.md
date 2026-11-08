@@ -49,7 +49,7 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
   - The filter's Q value is solved from the peak height, so zero resonance gives a flat Butterworth response (−3 dB at the cutoff).
 - **Bypass:** at the maximum cutoff (13500 cents) with zero resonance the filter is skipped (8.1.2 #8). This is the default, so most voices pay nothing for the filter.
 - **Cutoff limits:** the cutoff, also when the LFO, envelope or modulators change it, is kept between 20 Hz and 45% of the sample rate.
-- **Starting mid-note:** when modulation brings a bypassed filter's cutoff below 13500 cents (or adds resonance) while the note plays, the filter starts in its steady state for the current sample instead of from zero, so the output doesn't step (a click). A filter whose cutoff the LFO or modulation envelope moves is switched on and off only by the render loop, once per block, so a controller change can't restart it.
+- **Starting mid-note:** when modulation brings a bypassed filter's cutoff below 13500 cents (or adds resonance) while the note plays, the filter starts in its steady state for the current sample instead of from zero, so the output doesn't step (a click). A filter whose cutoff the LFO or modulation envelope moves is switched on and off only by the render loop, once per block, so a controller change can't restart it. When a modulator or NRPN sets that LFO or envelope depth back to 0, the cutoff returns to the base value (and the filter is bypassed again if that is 13500 cents without resonance).
 
 ### Pan
 
@@ -147,7 +147,7 @@ Creative never published the full unit table; the conversions follow the AWE32 p
 - **Soft pedal (CC67):** notes started while it is pressed are up to 6 dB quieter and up to 360 cents darker.
 - **Mono mode and legato:**
   - Mono mode (CC126/127) and the legato footswitch (CC68) make a key pressed while another is held continue the note at the new pitch, without restarting the envelope.
-  - Releasing that key returns to the previously held key; up to 8 held keys are remembered. Releasing the legato footswitch (also by Reset All Controllers) outside mono mode forgets them, as the keys aren't tracked in poly mode.
+  - Releasing that key returns to the previously held key; up to 8 held keys are remembered. In poly mode the keys are tracked only while the legato footswitch is down: pressing it remembers the keys already held, and releasing it (also by Reset All Controllers) forgets them. A key held from before the pedal can still sound its own note; releasing the top key then ends the legato note instead of moving it onto that key.
   - In mono mode, pressing the key that is already sounding again restarts the note (the old one is released), so a channel keeps one note.
   - A note kept by the sustain pedal or hold 2 after its key was let go counts as held too, so the next key continues it (one note sounds, as on a mono synth). A note kept by sostenuto stays as it is. When there are several such notes, the one whose key is down (the one sounding as the top key) continues; releasing the top key always returns that same note to the previous key.
   - A key outside the key range of a zone of the sounding note (another sample of a multisampled instrument, or no zone at all) isn't played legato, as stretching the old sample would play the wrong sound: the note is released and the key starts as a new note (with portamento on, gliding from the previous key). Returning to a held key in another zone when the top key is released works the same way.

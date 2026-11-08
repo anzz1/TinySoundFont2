@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.014 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.015 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -464,7 +464,11 @@ struct tsf
 
 #ifndef TSF_NO_STDIO
 static int tsf_stream_stdio_read(FILE* f, void* ptr, unsigned int size) { return (int)fread(ptr, 1, size, f); }
-static int tsf_stream_stdio_skip(FILE* f, unsigned int count) { return !fseek(f, count, SEEK_CUR); }
+static int tsf_stream_stdio_skip(FILE* f, unsigned int count) // in steps that fit a 32-bit long (a larger count would seek backwards)
+{
+	for (; count > 0x7FFFFFFF; count -= 0x7FFFFFFF) if (fseek(f, 0x7FFFFFFF, SEEK_CUR)) return 0;
+	return !fseek(f, (long)count, SEEK_CUR);
+}
 TSFDEF tsf* tsf_load_filename(const char* filename)
 {
 	tsf* res;
@@ -648,7 +652,7 @@ static TSF_BOOL tsf_riffchunk_read(struct tsf_riffchunk* parent, struct tsf_riff
 	if (*chunk->id <= ' ' || *chunk->id >= 'z') return TSF_FALSE;
 	if (!stream->read(stream->data, &chunk->size, sizeof(tsf_u32))) return TSF_FALSE;
 	chunk->size = TSF_SWAP32LE(chunk->size);
-	if (parent && sizeof(tsf_fourcc) + sizeof(tsf_u32) + chunk->size > parent->size) return TSF_FALSE;
+	if (parent && (parent->size < sizeof(tsf_fourcc) + sizeof(tsf_u32) || chunk->size > parent->size - (sizeof(tsf_fourcc) + sizeof(tsf_u32)))) return TSF_FALSE; // (no wraparound with a 32-bit size_t)
 	if (parent) parent->size -= sizeof(tsf_fourcc) + sizeof(tsf_u32) + chunk->size;
 	IsRiff = TSF_FourCCEquals(chunk->id, "RIFF"), IsList = TSF_FourCCEquals(chunk->id, "LIST");
 	if (IsRiff && parent) return TSF_FALSE; //not allowed
@@ -1774,7 +1778,8 @@ static void tsf_voice_modulate(tsf* f, struct tsf_voice* v, TSF_BOOL init)
 	if (init || n.attenuation != o->attenuation) v->noteGainDB += ((init ? 0.0f : o->attenuation) - n.attenuation) * 0.1f;
 	if (init || n.pan != o->pan) tsf_voice_setpan(v, n.pan, (c ? c->panOffset : 0.0f));
 	if (init || n.transpose != o->transpose || n.tune != o->tune || n.pitch_keytrack != o->pitch_keytrack) tsf_voice_calcpitchratio(v, &n, (c ? c->tuning : 0.0f));
-	if (init || n.initialFilterFc != o->initialFilterFc || n.initialFilterQ != o->initialFilterQ) // the filter runs on the samples scaled by 2^15
+	// the filter runs on the samples scaled by 2^15; a changed LFO or envelope depth too, as a depth of 0 hands the cutoff back from the render loop
+	if (init || n.initialFilterFc != o->initialFilterFc || n.initialFilterQ != o->initialFilterQ || n.modLfoToFilterFc != o->modLfoToFilterFc || n.modEnvToFilterFc != o->modEnvToFilterFc)
 		tsf_voice_lowpass_update(&v->lowpass, n.initialFilterFc, n.initialFilterQ, f->outSampleRate, (init ? 0.0 : f->fontSamples[(unsigned int)(v->sourceSamplePosition >> 32)] * 32768.0), (TSF_BOOL)(n.modLfoToFilterFc || n.modEnvToFilterFc));
 	if (!init && n.freqModLFO != o->freqModLFO) v->modlfo.delta = (v->modlfo.delta < 0.0f ? -4.0f : 4.0f) * tsf_cents2Hertz((float)n.freqModLFO) / f->outSampleRate;
 	if (!init && n.freqVibLFO != o->freqVibLFO) v->viblfo.delta = (v->viblfo.delta < 0.0f ? -4.0f : 4.0f) * tsf_cents2Hertz((float)n.freqVibLFO) / f->outSampleRate;
@@ -2423,7 +2428,9 @@ TSFDEF int tsf_set_max_voices(tsf* f, int max_voices)
 {
 	int i = f->voiceNum;
 	int newVoiceNum = (f->voiceNum > max_voices ? f->voiceNum : max_voices);
-	struct tsf_voice *newVoices = (struct tsf_voice*)TSF_REALLOC(f->voices, newVoiceNum * sizeof(struct tsf_voice));
+	struct tsf_voice *newVoices;
+	if (newVoiceNum > 0x7FFFFFFF / (int)sizeof(struct tsf_voice)) return 0; // over 2 GB (the allocation size would wrap on 32-bit)
+	newVoices = (struct tsf_voice*)TSF_REALLOC(f->voices, newVoiceNum * sizeof(struct tsf_voice));
 	if (!newVoices) return 0;
 	f->voices = newVoices;
 	f->voiceNum = f->maxVoiceNum = newVoiceNum;
@@ -3015,6 +3022,35 @@ static TSF_BOOL tsf_channel_legato(tsf* f, int channel, struct tsf_channel* c, i
 #undef TSF_LEGATO_SOURCE
 #undef TSF_KEY_NOTE
 
+// Remember a key held down in mono mode or with the legato footswitch (moved to the top of the held keys, the last one sounds)
+static void tsf_channel_hold_key(struct tsf_channel* c, int key)
+{
+	unsigned i = 0;
+	while (i != c->monoCount && c->monoKeys[i] != key) i++;
+	if (i == c->monoCount) { if (i == sizeof(c->monoKeys)) i = 0; /* full: the oldest key is dropped */ else c->monoCount++; }
+	for (; i + 1 < c->monoCount; i++) c->monoKeys[i] = c->monoKeys[i + 1];
+	c->monoKeys[c->monoCount - 1] = (unsigned char)key;
+}
+
+// The legato footswitch pressed in poly mode: the keys already held down are remembered (oldest note first), so releasing a
+// legato key returns to a key that was held before the pedal
+static void tsf_channel_hold_down_keys(tsf* f, int channel, struct tsf_channel* c)
+{
+	struct tsf_voice *v, *vEnd = (f->voices ? f->voices + f->voiceNum : TSF_NULL), *next;
+	unsigned int after = 0;
+	TSF_BOOL any = TSF_FALSE;
+	c->monoCount = 0;
+	for (;;)
+	{
+		for (next = TSF_NULL, v = f->voices; v != vEnd; v++)
+			if (v->playingPreset != -1 && v->playingChannel == channel && TSF_VOICE_KEYDOWN(v) && !v->heldSustain &&
+				(!any || v->playIndex > after) && (!next || v->playIndex < next->playIndex)) next = v;
+		if (!next) return;
+		tsf_channel_hold_key(c, next->playingKey);
+		after = next->playIndex, any = TSF_TRUE;
+	}
+}
+
 TSFDEF int tsf_channel_note_on(tsf* f, int channel, int key, float vel)
 {
 	struct tsf_channels* cs;
@@ -3032,11 +3068,7 @@ TSFDEF int tsf_channel_note_on(tsf* f, int channel, int key, float vel)
 	cs = f->channels;
 	if (c->monoMode || c->cc[68] >= 64) // mono mode or legato footswitch
 	{
-		unsigned i = 0; // remember the key (moved to the top of the held keys)
-		while (i != c->monoCount && c->monoKeys[i] != key) i++;
-		if (i == c->monoCount) { if (i == sizeof(c->monoKeys)) i = 0; /* full: the oldest key is dropped */ else c->monoCount++; }
-		for (; i + 1 < c->monoCount; i++) c->monoKeys[i] = c->monoKeys[i + 1];
-		c->monoKeys[c->monoCount - 1] = (unsigned char)key;
+		tsf_channel_hold_key(c, key);
 		if (tsf_channel_legato(f, channel, c, key, &restartVel)) { c->lastKey = (unsigned char)key; return 1; } // else a new note
 		if (c->monoMode) // the same key pressed again restarts the note: one note per channel in mono mode
 		{
@@ -3075,9 +3107,16 @@ TSFDEF void tsf_channel_note_off(tsf* f, int channel, int key)
 			for (c->monoCount--; i < c->monoCount; i++) c->monoKeys[i] = c->monoKeys[i + 1];
 			if (wasTop && c->monoCount) // the released key's own note continues at the held key
 			{
+				int back = c->monoKeys[c->monoCount - 1];
 				float restartVel;
-				if (tsf_channel_retarget(f, channel, c, key, c->monoKeys[c->monoCount - 1], &restartVel)) return;
-				if (restartVel > 0.0f) { tsf_channel_note_on(f, channel, c->monoKeys[c->monoCount - 1], restartVel); return; } // the held key is in another zone: a new note
+				for (v = f->voices; v != vEnd; v++) // unless that key sounds its own note (held from before the legato footswitch)
+					if (v->playingPreset != -1 && v->playingChannel == channel && v->playingKey == back && TSF_VOICE_KEYDOWN(v) && !v->heldSustain) break;
+				if (v == vEnd)
+				{
+					if (tsf_channel_retarget(f, channel, c, key, back, &restartVel)) return;
+					if (restartVel > 0.0f) { tsf_channel_note_on(f, channel, back, restartVel); return; } // the held key is in another zone: a new note
+				}
+				v = f->voices;
 			}
 		}
 	}
@@ -3188,8 +3227,10 @@ static int tsf_channel_data_value(const struct tsf_channel* c)
 TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int control_value)
 {
 	struct tsf_channel* c = tsf_channel_init(f, channel);
+	unsigned char prev;
 	if (!c) return 0;
 	if (control_value < 0) control_value = 0; else if (control_value > 127) control_value = 127; // MIDI data bytes are 7 bit
+	prev = c->cc[controller & 127];
 	if ((unsigned)controller < 128)
 	{
 		TSF_BOOL changed = (c->cc[controller] != (unsigned char)control_value);
@@ -3222,7 +3263,11 @@ TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int con
 			return 1;
 		case  64 /*SUSTAIN*/         : tsf_channel_set_sustain(f, channel, (int)(control_value >= 64)); return 1;
 		case  69 /*HOLD2*/           : c->hold2 = (unsigned short)(control_value >= 64); tsf_channel_pedals_released(f, channel, c); return 1;
-		case  68 /*LEGATO_SWITCH*/   : if (control_value < 64 && !c->monoMode) c->monoCount = 0; return 1; // poly again: forget the held keys (no longer tracked)
+		case  68 /*LEGATO_SWITCH*/   : // poly mode: the keys are only tracked while the pedal is down
+			if (c->monoMode) return 1;
+			if (control_value < 64) c->monoCount = 0; // poly again: forget the held keys
+			else if (prev < 64) tsf_channel_hold_down_keys(f, channel, c); // the keys already held, legato returns to them
+			return 1;
 		case  96 /*DATA_INCREMENT*/  : // RP-018: steps the LSB, the MSB for coarse tuning
 		case  97 /*DATA_DECREMENT*/  :
 		{

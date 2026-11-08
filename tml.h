@@ -1,4 +1,4 @@
-/* TinyMidiLoader2 - v2.004 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
+/* TinyMidiLoader2 - v2.005 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TML_IMPLEMENTATION
@@ -42,9 +42,16 @@
 extern "C" {
 #endif
 
+#if defined(__GNUC__)
+//to avoid -Wunused warnings with TML_STATIC :
+#define TML_UNUSEDFN __attribute__((__unused__))
+#else
+#define TML_UNUSEDFN
+#endif
+
 // Define this if you want the API functions to be static
 #ifdef TML_STATIC
-#define TMLDEF static
+#define TMLDEF TML_UNUSEDFN static
 #else
 #define TMLDEF extern
 #endif
@@ -488,7 +495,7 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 		{
 			step_smallest = 0x7fffffff;
 			ms = tempo_msec + (ticks - tempo_ticks) * ticks2time;
-			msec = (ms < 2147483647.0 ? (int)ms : 2147483647); // no int overflow (24 days)
+			msec = (ms < 2147483646.5 ? (int)(ms + 0.5) : 2147483647); // to the nearest ms, no int overflow (24 days)
 			for (t = tracks; t != tracksEnd; t++)
 			{
 				if (t->Idx == t->End) continue;
