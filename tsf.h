@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.008 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.009 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -215,7 +215,7 @@ TSFDEF int tsf_get_voice_effects(const tsf* f, int voice_index, float* chorus_se
 TSFDEF int tsf_note_on(tsf* f, int preset_index, int key, float vel);
 TSFDEF int tsf_bank_note_on(tsf* f, int bank, int preset_number, int key, float vel);
 
-// Stop playing a note
+// Stop playing a note started with tsf_note_on/tsf_bank_note_on (no channel)
 //   (bank_note_off returns 0 if preset does not exist, otherwise 1)
 TSFDEF void tsf_note_off(tsf* f, int preset_index, int key);
 TSFDEF int  tsf_bank_note_off(tsf* f, int bank, int preset_number, int key);
@@ -880,7 +880,7 @@ static TSF_BOOL tsf_mod_srcvalid(unsigned s, TSF_BOOL isAmountSrc)
 {
 	unsigned idx = s & 127;
 	if ((s >> 10) > 3) return TSF_FALSE; // unknown curve type
-	if (s & 128) return (idx && idx != 6 && idx != 32 && idx != 38 && (idx < 98 || idx > 101) && idx < 120); // MIDI controller
+	if (s & 128) return (idx && idx != 6 && (idx < 32 || idx > 63) && (idx < 98 || idx > 101) && idx < 120); // MIDI controller (32-63 are LSBs, 8.2.1)
 	return (idx == 0 || idx == 2 || idx == 3 || idx == 10 || idx == 13 || idx == 14 || idx == 16 || (idx == 127 && !isAmountSrc));
 }
 
@@ -1488,6 +1488,14 @@ static float tsf_lowpass_fc(float cents, float outSampleRate)
 	return (hz < 0.45f * outSampleRate ? hz : 0.45f * outSampleRate) / outSampleRate;
 }
 
+// A filter turning on mid-note starts in the steady state for the current input x (zero state would step the output: a click)
+static void tsf_voice_lowpass_start(struct tsf_voice_lowpass* e, double x)
+{
+	double dcGain = e->gain; // (a0 + a1 + a2) / (1 + b1 + b2) of this lowpass
+	e->z1 = (dcGain - e->a0) * x;
+	e->z2 = (e->a0 - e->b2 * dcGain) * x;
+}
+
 static float tsf_voice_lowpass_process(struct tsf_voice_lowpass* e, double In)
 {
 	double Out = In * e->a0 + e->z1; e->z1 = In * e->a1 + e->z2 - e->b1 * Out; e->z2 = In * e->a0 - e->b2 * Out; return (float)Out;
@@ -1590,7 +1598,7 @@ static TSF_BOOL tsf_env_differs(const struct tsf_envelope* a, const struct tsf_e
 	return TSF_FALSE;
 }
 
-static void tsf_voice_lowpass_update(struct tsf_voice_lowpass* l, int fcCents, int qCentibels, float outSampleRate)
+static void tsf_voice_lowpass_update(struct tsf_voice_lowpass* l, int fcCents, int qCentibels, float outSampleRate, double x)
 {
 	// Resonance = peak height above DC, with the DC gain lowered by half of it (8.1.2 #9). A 2-pole lowpass peaks at
 	// Q / sqrt(1 - 1 / (4 Q^2)) above DC, solved for Q here (zero resonance = Butterworth). Bypassed at maximum cutoff without resonance.
@@ -1601,8 +1609,8 @@ static void tsf_voice_lowpass_update(struct tsf_voice_lowpass* l, int fcCents, i
 	l->gain = TSF_EXP(qCentibels * (2.302585092994046 / -400.0)); // 1 / sqrt(peak)
 	l->active = (l->resonant || fcCents < 13500);
 	if (!l->active) return;
-	if (!wasActive) l->z1 = l->z2 = 0;
 	tsf_voice_lowpass_setup(l, tsf_lowpass_fc((float)fcCents, outSampleRate));
+	if (!wasActive) tsf_voice_lowpass_start(l, x);
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1757,7 +1765,8 @@ static void tsf_voice_modulate(tsf* f, struct tsf_voice* v, TSF_BOOL init)
 	if (init || n.attenuation != o->attenuation) v->noteGainDB += ((init ? 0.0f : o->attenuation) - n.attenuation) * 0.1f;
 	if (init || n.pan != o->pan) tsf_voice_setpan(v, n.pan, (c ? c->panOffset : 0.0f));
 	if (init || n.transpose != o->transpose || n.tune != o->tune || n.pitch_keytrack != o->pitch_keytrack) tsf_voice_calcpitchratio(v, &n, (c ? c->tuning : 0.0f));
-	if (init || n.initialFilterFc != o->initialFilterFc || n.initialFilterQ != o->initialFilterQ) tsf_voice_lowpass_update(&v->lowpass, n.initialFilterFc, n.initialFilterQ, f->outSampleRate);
+	if (init || n.initialFilterFc != o->initialFilterFc || n.initialFilterQ != o->initialFilterQ) // the filter runs on the samples scaled by 2^15
+		tsf_voice_lowpass_update(&v->lowpass, n.initialFilterFc, n.initialFilterQ, f->outSampleRate, (init ? 0.0 : f->fontSamples[(unsigned int)(v->sourceSamplePosition >> 32)] * 32768.0));
 	if (!init && n.freqModLFO != o->freqModLFO) v->modlfo.delta = (v->modlfo.delta < 0.0f ? -4.0f : 4.0f) * tsf_cents2Hertz((float)n.freqModLFO) / f->outSampleRate;
 	if (!init && n.freqVibLFO != o->freqVibLFO) v->viblfo.delta = (v->viblfo.delta < 0.0f ? -4.0f : 4.0f) * tsf_cents2Hertz((float)n.freqVibLFO) / f->outSampleRate;
 	if (!init && tsf_env_differs(&n.ampenv, &o->ampenv)) tsf_voice_envelope_update_parameters(&v->ampenv, &n.ampenv, v->key);
@@ -1860,8 +1869,8 @@ static void tsf_voice_render(tsf* f, struct tsf_voice* v, float* outputBuffer, i
 			float fres = tmpInitialFilterFc + v->modlfo.level * tmpModLfoToFilterFc + modEnv * tmpModEnvToFilterFc;
 			TSF_BOOL wasActive = tmpLowpass.active;
 			tmpLowpass.active = (tmpLowpass.resonant || fres < 13500.0f);
-			if (tmpLowpass.active && !wasActive) tmpLowpass.z1 = tmpLowpass.z2 = 0; // no stale state from when it was bypassed
 			if (tmpLowpass.active && (fres != lastFres || !wasActive)) tsf_voice_lowpass_setup(&tmpLowpass, tsf_lowpass_fc(fres, tmpSampleRate)), lastFres = fres; // e.g. not while the envelope sustains
+			if (tmpLowpass.active && !wasActive) tsf_voice_lowpass_start(&tmpLowpass, input[(unsigned int)(phase >> 32)] * 32768.0); // no stale state from when it was bypassed
 		}
 
 		if (dynamicPitchRatio)
@@ -1876,7 +1885,11 @@ static void tsf_voice_render(tsf* f, struct tsf_voice* v, float* outputBuffer, i
 		}
 
 		if (v->minLengthLeft > 0) v->minLengthLeft -= blockSamples;
-		if (v->releasePending && v->minLengthLeft <= 0) tsf_voice_release(f, v); // every block: a note off from another thread can come late
+		if (v->releasePending && v->minLengthLeft <= 0) // every block: a note off from another thread can come late
+		{
+			tsf_voice_release(f, v);
+			if (isLooping && v->loopStart >= v->loopEnd) isLooping = TSF_FALSE, phaseSafe = phaseEnd; // a sustain loop ends with the release
+		}
 
 		// Update EG and LFOs, the gain ramps from the value at the start of the block to the value at its end
 		tsf_voice_envelope_process(&v->ampenv, blockSamples, tmpSampleRate);
@@ -2551,7 +2564,7 @@ TSFDEF void tsf_note_off(tsf* f, int preset_index, int key)
 	for (; v != vEnd; v++)
 	{
 		//Find the first and last entry in the voices list with matching preset, key and look up the smallest play index
-		if (v->playingPreset != preset_index || v->playingKey != key || !TSF_VOICE_KEYDOWN(v)) continue;
+		if (v->playingPreset != preset_index || v->playingKey != key || v->playingChannel != -1 || !TSF_VOICE_KEYDOWN(v)) continue;
 		else if (!vMatchFirst || v->playIndex < vMatchFirst->playIndex) vMatchFirst = vMatchLast = v;
 		else if (v->playIndex == vMatchFirst->playIndex) vMatchLast = v;
 	}
@@ -2560,7 +2573,7 @@ TSFDEF void tsf_note_off(tsf* f, int preset_index, int key)
 	{
 		//Stop all voices with matching preset, key and the smallest play index which was enumerated above
 		if (v != vMatchFirst && v != vMatchLast &&
-			(v->playIndex != vMatchFirst->playIndex || v->playingPreset != preset_index || v->playingKey != key || !TSF_VOICE_KEYDOWN(v))) continue;
+			(v->playIndex != vMatchFirst->playIndex || v->playingPreset != preset_index || v->playingKey != key || v->playingChannel != -1 || !TSF_VOICE_KEYDOWN(v))) continue;
 		tsf_voice_end(f, v);
 	}
 }
@@ -2936,34 +2949,41 @@ static void tsf_channel_glide(tsf* f, const struct tsf_channel* c, float cents, 
 	else *outCents = *outDelta = 0.0f;
 }
 
-// Mono mode: a key pressed while another one is held continues that note's voices with the new pitch instead of starting new ones
-static TSF_BOOL tsf_channel_legato(tsf* f, int channel, struct tsf_channel* c, int key)
+//a note whose key is down, or that sustain or hold 2 keeps (like a held key); a note kept by sostenuto stays as it is
+#define TSF_LEGATO_SOURCE(v) (v->playingPreset != -1 && v->playingChannel == channel && TSF_VOICE_KEYDOWN(v) && (!v->heldSustain || !v->sostenuto))
+
+// Continue oldKey's voices at the new key without re-attacking, gliding from the CC84 key or with portamento on (false: none could)
+static TSF_BOOL tsf_channel_retarget(tsf* f, int channel, struct tsf_channel* c, int oldKey, int key)
 {
-	struct tsf_voice *v, *vEnd = (f->voices ? f->voices + f->voiceNum : TSF_NULL), *last = TSF_NULL;
-	int oldKey;
-	//the most recently started note whose key is still down, or that sustain or hold 2 keeps after its key was let go
-	//(the pedal holds the note like a held key, so the new key continues it; a note kept by sostenuto stays as it is)
-	#define TSF_LEGATO_SOURCE(v) (v->playingPreset != -1 && v->playingChannel == channel && TSF_VOICE_KEYDOWN(v) && (!v->heldSustain || !v->sostenuto))
-	for (v = f->voices; v != vEnd; v++)
-		if (TSF_LEGATO_SOURCE(v) && (v->playingKey != key || v->heldSustain) && (!last || v->playIndex > last->playIndex)) last = v;
-	if (!last) return TSF_FALSE;
-	oldKey = last->playingKey;
+	struct tsf_voice *v, *vEnd = (f->voices ? f->voices + f->voiceNum : TSF_NULL);
+	TSF_BOOL found = TSF_FALSE;
 	for (v = f->voices; v != vEnd; v++)
 		if (TSF_LEGATO_SOURCE(v) && v->playingKey == oldKey)
 		{
 			float cents = (c->portaKey != 255 ? (c->portaKey - key) * 100.0f : (oldKey - key) * 100.0f + v->portaCents);
 			v->heldSustain = 0; // the new key is down now
-			if (c->cc[65] >= 64) tsf_channel_glide(f, c, cents, &v->portaCents, &v->portaDelta);
+			if (c->portaKey != 255 || c->cc[65] >= 64) tsf_channel_glide(f, c, cents, &v->portaCents, &v->portaDelta);
 			else v->portaCents = v->portaDelta = 0.0f;
 			v->playingKey = key;
 			if (v->region->fixedKey < 0) v->key = (unsigned char)key;
 			tsf_voice_modulate(f, v, TSF_FALSE); //key number sources
 			tsf_voice_calcpitchratio(v, &v->mr, c->tuning);
+			found = TSF_TRUE;
 		}
-	c->portaKey = 255;
-	return TSF_TRUE;
-	#undef TSF_LEGATO_SOURCE
+	if (found) c->portaKey = 255;
+	return found;
 }
+
+// Mono mode: a key pressed while another one is held continues that note's voices with the new pitch instead of starting new ones
+static TSF_BOOL tsf_channel_legato(tsf* f, int channel, struct tsf_channel* c, int key)
+{
+	struct tsf_voice *v, *vEnd = (f->voices ? f->voices + f->voiceNum : TSF_NULL), *last = TSF_NULL;
+	//the most recently started note that can continue
+	for (v = f->voices; v != vEnd; v++)
+		if (TSF_LEGATO_SOURCE(v) && (v->playingKey != key || v->heldSustain) && (!last || v->playIndex > last->playIndex)) last = v;
+	return (last && tsf_channel_retarget(f, channel, c, last->playingKey, key));
+}
+#undef TSF_LEGATO_SOURCE
 
 TSFDEF int tsf_channel_note_on(tsf* f, int channel, int key, float vel)
 {
@@ -2986,8 +3006,16 @@ TSFDEF int tsf_channel_note_on(tsf* f, int channel, int key, float vel)
 		for (; i + 1 < c->monoCount; i++) c->monoKeys[i] = c->monoKeys[i + 1];
 		c->monoKeys[c->monoCount - 1] = (unsigned char)key;
 		if (tsf_channel_legato(f, channel, c, key)) { c->lastKey = (unsigned char)key; return 1; }
+		if (c->monoMode) // the same key pressed again restarts the note: one note per channel in mono mode
+		{
+			struct tsf_voice *v, *vEnd = (f->voices ? f->voices + f->voiceNum : TSF_NULL);
+			for (v = f->voices; v != vEnd; v++)
+				if (v->playingPreset != -1 && v->playingChannel == channel && v->playingKey == key && TSF_VOICE_KEYDOWN(v)) tsf_voice_end(f, v);
+		}
 	}
-	if (c->cc[65] >= 64) //portamento on: glide from the CC84 key (for this note only) or else from the previous note
+	//CC84 (MIDI 1.0): a sounding note on the source key glides to the new key, no new voice
+	if (c->portaKey != 255 && c->portaKey != key && tsf_channel_retarget(f, channel, c, c->portaKey, key)) { c->lastKey = (unsigned char)key; return 1; }
+	if (c->portaKey != 255 || c->cc[65] >= 64) //glide from the CC84 key (this note only, also with portamento off), or with portamento on from the previous note
 	{
 		int from = (c->portaKey != 255 ? c->portaKey : c->lastKey);
 		if (from != 255) tsf_channel_glide(f, c, (from - key) * 100.0f, &cs->glideCents, &cs->glideDelta);

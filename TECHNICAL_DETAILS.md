@@ -31,7 +31,7 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
   - The attack is linear in amplitude, so it looks convex on a dB scale.
   - Decay and release are linear in dB. Their times are the time for a 100 dB drop (8.1.2 #36, #38).
   - Release: the release takes at least 10 ms (`TSF_FASTRELEASETIME`), so the default release of 1 ms (−12000 timecents) and other short ones don't click at a note off. Without it, a 1 ms release adds high-frequency energy at the note off that grows as the render block shrinks: 2.5 dB more than a 10 ms release with the default 64-sample block, 17 dB more (a tick on every note off of a sustained sound) with an 8-sample block. The modulation envelope's release stays exact.
-  - The voice ends once the envelope is 100 dB below full scale (9.1.7), including when it would otherwise sustain at that level. A released voice also ends once its total gain (envelope plus attenuation, allowing for the modulation LFO's loudest point) is 100 dB down.
+  - The voice ends once the envelope is 100 dB below full scale (8.1.2), including when it would otherwise sustain at that level. A released voice also ends once its total gain (envelope plus attenuation, allowing for the modulation LFO's loudest point) is 100 dB down.
 - **Modulation envelope:**
   - The attack is convex (8.1.2 #26), using the same curve as the convex modulator source.
   - Decay and release are linear, and their times are for a full-scale change. A release from 50% therefore takes half the release time (8.1.2 #30).
@@ -46,6 +46,7 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
   - The filter's Q value is solved from the peak height, so zero resonance gives a flat Butterworth response (−3 dB at the cutoff).
 - **Bypass:** at the maximum cutoff (13500 cents) with zero resonance the filter is skipped (8.1.2 #8). This is the default, so most voices pay nothing for the filter.
 - **Cutoff limits:** the cutoff, also when the LFO, envelope or modulators change it, is kept between 20 Hz and 45% of the sample rate.
+- **Starting mid-note:** when modulation brings a bypassed filter's cutoff below 13500 cents (or adds resonance) while the note plays, the filter starts in its steady state for the current sample instead of from zero, so the output doesn't step (a click).
 
 ### Pan
 
@@ -59,6 +60,7 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
 - **Normalization:** controllers are divided by their range plus one: a CC value by 128, the pitch wheel by 16384.
   - **Pitch wheel sensitivity exception:** this source is divided by 127, so the default pitch wheel modulator (12700 cents) bends by exactly the RPN 0 range (±2 semitones by default). Read literally, the spec's 127/128 mapping would give 198.4 cents.
 - **14-bit controllers:** CC1–CC31 (except data entry, CC6) combine with their LSB (CC33–CC63) once the LSB has been sent. An MSB sets its LSB back to 0 (MIDI 1.0), so a later MSB alone is exact.
+  - **LSBs as sources:** a modulator with CC32–CC63 as a source is ignored, as 8.2.1 says, since those are reserved for the LSBs of CC0–CC31 (CC33 is already part of a CC1 source).
 - **Curves:** concave is `−40/96·log10(1−x)` and convex is `1 + 40/96·log10(x)`, as in FluidSynth 2.3 and later. For bipolar sources the curve is mirrored around the center.
 - **Merging (9.5):**
   - An identical modulator replaces the default one or the global zone's; identical means the same sources, destination and transform.
@@ -143,9 +145,11 @@ Creative never published the full unit table; the conversions follow the AWE32 p
 - **Mono mode and legato:**
   - Mono mode (CC126/127) and the legato footswitch (CC68) make a key pressed while another is held continue the note at the new pitch, without restarting the envelope.
   - Releasing that key returns to the previously held key; up to 8 held keys are remembered.
+  - In mono mode, pressing the key that is already sounding again restarts the note (the old one is released), so a channel keeps one note.
   - A note kept by the sustain pedal or hold 2 after its key was let go counts as held too, so the next key continues it (one note sounds, as on a mono synth). A note kept by sostenuto stays as it is.
 - **Portamento:**
-  - CC65 switches it on. Notes glide from the previous note, or from the key given by CC84 for the next note only.
+  - CC65 switches it on. Notes glide from the previous note.
+  - CC84 (Portamento Control) gives the key the next note glides from, also while CC65 is off (MIDI 1.0). If a note on that key is sounding, it glides to the new key without re-attacking and no new voice starts.
   - The glide time is CC5 (MSB) / CC37 (LSB) as a 14-bit value in milliseconds.
 - **RPNs:**
   - RPN 0: pitch bend range (MSB in semitones, LSB in cents).

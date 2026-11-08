@@ -1,4 +1,4 @@
-/* TinyMidiLoader2 - v2.002 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
+/* TinyMidiLoader2 - v2.003 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TML_IMPLEMENTATION
@@ -257,6 +257,7 @@ struct tml_parser
 	unsigned char *buf, *buf_end;
 	int last_status, message_array_size, message_count;
 	unsigned int skipped_time; // delta time of the messages that were not stored (unsupported events), added to the next one
+	unsigned int max_delta; // longer delta times (over 65536 beats) only come from damaged files
 };
 
 enum TMLSystemType
@@ -292,7 +293,7 @@ static int tml_parsemessage(tml_message** f, struct tml_parser* p)
 	tml_message* evt;
 
 	if (deltatime < 0 || status < 0) { TML_WARN("Unexpected end of file"); return -1; }
-	if (deltatime & 0xFFF00000) deltatime = 0; //throw away delays that are insanely high for malformatted midis
+	if ((unsigned int)deltatime > p->max_delta) deltatime = 0; //throw away delays that are insanely high for malformatted midis
 	if ((status & 0x80) == 0)
 	{
 		// Running status: the data byte belongs to a message with the same status as the previous channel message
@@ -401,11 +402,12 @@ static int tml_parsemessage(tml_message** f, struct tml_parser* p)
 TMLDEF tml_message* tml_load(struct tml_stream* stream)
 {
 	int num_tracks, division, trackbufsize = 0;
+	double smpte_ms_per_tick = 0; // with SMPTE timing, the fixed tick length (tempo events don't apply)
 	unsigned char midi_header[14], *trackbuf = TML_NULL;
 	unsigned int header_length;
 	struct tml_message* messages = TML_NULL;
 	struct tml_track *tracks, *t, *tracksEnd;
-	struct tml_parser p = { TML_NULL, TML_NULL, 0, 0, 1, 0 }; // message 0 is reserved for the first message in time (the list head that tml_free frees)
+	struct tml_parser p = { TML_NULL, TML_NULL, 0, 0, 1, 0, 0 }; // message 0 is reserved for the first message in time (the list head that tml_free frees)
 
 	// Parse MIDI header
 	if (stream->read(stream->data, midi_header, 14) != 14) { TML_ERROR("Unexpected end of file"); return messages; }
@@ -414,9 +416,16 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 		header_length < 6 || header_length > 0x10000 || midi_header[8] || midi_header[9] > 2) { TML_ERROR("Doesn't look like a MIDI file: invalid MThd header"); return messages; }
 	for (header_length -= 6; header_length; header_length--) // a longer header is allowed per SMF spec, skip it
 		if (stream->read(stream->data, midi_header, 1) != 1) { TML_ERROR("Unexpected end of file"); return messages; }
-	if (midi_header[12] & 0x80) { TML_ERROR("File uses unsupported SMPTE timing"); return messages; }
 	num_tracks = (int)(midi_header[10] << 8) | midi_header[11];
 	division = (int)(midi_header[12] << 8) | midi_header[13]; //division is ticks per beat (quarter-note)
+	if (midi_header[12] & 0x80) // SMPTE timing: negative frames per second (24, 25, 29 = 30 drop frame, 30) and ticks per frame
+	{
+		int fps = 256 - midi_header[12];
+		if ((fps != 24 && fps != 25 && fps != 29 && fps != 30) || !midi_header[13]) { TML_ERROR("Invalid SMPTE timing"); return messages; }
+		smpte_ms_per_tick = 1000.0 / ((fps == 29 ? 29.97 : fps) * midi_header[13]);
+		division = 1;
+	}
+	p.max_delta = (smpte_ms_per_tick ? (unsigned int)(65536 * 500.0 / smpte_ms_per_tick) : (unsigned int)division << 16); // 65536 beats at 120 bpm
 	if (num_tracks <= 0 || division <= 0) { TML_ERROR("Doesn't look like a MIDI file: invalid track or division values"); return messages; }
 
 	// Allocate temporary tracks array for parsing
@@ -473,20 +482,20 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 		tml_message *PrevMessage = TML_NULL, *Msg, *MsgEnd;
 		unsigned int ticks = 0, tempo_ticks = 0; //tick counter and value at last tempo change
 		int step_smallest, msec, tempo_msec = 0; //msec value at last tempo change
-		double ticks2time = 500000 / (1000.0 * division); //milliseconds per tick
+		double ticks2time = (smpte_ms_per_tick ? smpte_ms_per_tick : 500000 / (1000.0 * division)); //milliseconds per tick
 
 		// Loop through all messages over all tracks ordered by time
 		for (step_smallest = 0; step_smallest != 0x7fffffff; ticks += step_smallest)
 		{
 			step_smallest = 0x7fffffff;
-			msec = tempo_msec + (int)((ticks - tempo_ticks) * ticks2time);
+			{ double ms = tempo_msec + (ticks - tempo_ticks) * ticks2time; msec = (ms < 2147483647.0 ? (int)ms : 2147483647); } // no int overflow (24 days)
 			for (t = tracks; t != tracksEnd; t++)
 			{
 				if (t->Idx == t->End) continue;
 				for (Msg = &messages[t->Idx], MsgEnd = &messages[t->End]; Msg != MsgEnd && t->Ticks + Msg->time == ticks; Msg++, t->Idx++)
 				{
 					t->Ticks += Msg->time;
-					if (Msg->type == TML_SET_TEMPO)
+					if (Msg->type == TML_SET_TEMPO && !smpte_ms_per_tick)
 					{
 						unsigned char* Tempo = ((struct tml_tempomsg*)Msg)->Tempo;
 						ticks2time = ((Tempo[0]<<16)|(Tempo[1]<<8)|Tempo[2])/(1000.0 * division);
@@ -533,7 +542,7 @@ TMLDEF int tml_get_info(tml_message* Msg, int* out_used_channels, int* out_used_
 	{
 		time_length = Msg->time;
 		if (Msg->type == TML_PROGRAM_CHANGE && !programs[(int)Msg->program]) { programs[(int)Msg->program] = 1; used_programs++; }
-		if (Msg->type != TML_NOTE_ON) continue;
+		if (Msg->type != TML_NOTE_ON || !Msg->velocity) continue; // a note on with velocity 0 is a note off
 		if (time_first_note == 0xffffffff) time_first_note = time_length;
 		if (!channels[Msg->channel]) { channels[Msg->channel] = 1; used_channels++; }
 		total_notes++;
