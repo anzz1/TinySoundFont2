@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.009 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.010 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -1288,12 +1288,11 @@ static int tsf_load_samples(void** pRawBuffer, float** pSampleBuffer /* floats w
 {
 	#ifdef STB_VORBIS_INCLUDE_STB_VORBIS_H
 	// With OGG Vorbis support we cannot pre-allocate the memory for tsf_decode_sf3_samples
-	tsf_u32 resNum, resMax; float* oldres; int got;
+	tsf_u32 resNum, resMax; float* oldres;
 	*pSmplCount = chunkSmpl->size;
 	if (*pSmplCount > 0x7FFFFFFF) return 0; // no wrap on 32-bit, and the int read result
 	*pRawBuffer = (void*)TSF_MALLOC(*pSmplCount + sizeof(short)); // room for the extra zero sample if these are plain 16-bit samples
-	if (!*pRawBuffer || (got = stream->read(stream->data, *pRawBuffer, chunkSmpl->size)) <= 0) return 0;
-	if ((unsigned int)got < chunkSmpl->size) TSF_MEMSET((char*)*pRawBuffer + got, 0, chunkSmpl->size - got); // truncated file: silence, not uninitialized memory
+	if (!*pRawBuffer || !chunkSmpl->size || stream->read(stream->data, *pRawBuffer, chunkSmpl->size) != (int)chunkSmpl->size) return 0; // also a truncated file
 	if (chunkSmpl->id[3] != 'o') return 1;
 
 	// Decode custom .sfo 'smpo' format where all samples are in a single ogg stream
@@ -1306,13 +1305,12 @@ static int tsf_load_samples(void** pRawBuffer, float** pSampleBuffer /* floats w
 	return 1;
 	#else
 	// The samples stay 16-bit like in the file (byte-swapped in place on big-endian machines)
-	float *res; short *out; const short *in; int got;
+	float *res; short *out; const short *in;
 	(void)pRawBuffer;
 	*pSmplCount = chunkSmpl->size / (unsigned int)sizeof(short);
 	if (chunkSmpl->size > 0x7FFFFFFF) return 0; // no wrap on 32-bit, and the int read result
 	*pSampleBuffer = (float*)TSF_MALLOC((*pSmplCount + 1) * sizeof(short)); // kept as 16-bit, with one extra zero sample for the interpolation at the very end
-	if (!*pSampleBuffer || (got = stream->read(stream->data, *pSampleBuffer, chunkSmpl->size)) <= 0) return 0;
-	if ((unsigned int)got < chunkSmpl->size) TSF_MEMSET((char*)*pSampleBuffer + got, 0, chunkSmpl->size - got); // truncated file: silence, not uninitialized memory
+	if (!*pSampleBuffer || !chunkSmpl->size || stream->read(stream->data, *pSampleBuffer, chunkSmpl->size) != (int)chunkSmpl->size) return 0; // also a truncated file
 	for (res = *pSampleBuffer, out = (short*)res, in = (short*)res + *pSmplCount; out != in; out++) *out = (short)TSF_SWAP16LE(*out);
 	*out = 0;
 	return 1;
@@ -2173,19 +2171,18 @@ TSFDEF tsf* tsf_load(struct tsf_stream* stream)
 		{
 			while (tsf_riffchunk_read(&chunkList, &chunk, stream))
 			{
-				// one stream read per chunk (a truncated file leaves zeros), parsed from memory; a chunk over 2 GB would wrap num * sizeof on 32-bit
+				// one stream read per chunk (a truncated file is rejected), parsed from memory; a chunk over 2 GB would wrap num * sizeof on 32-bit
 				#define HandleChunk(chunkName) (TSF_FourCCEquals(chunk.id, #chunkName) && !(chunk.size % chunkName##SizeInFile)) \
 					{ \
-						int num = (int)(chunk.size / chunkName##SizeInFile), i, got; \
+						int num = (int)(chunk.size / chunkName##SizeInFile), i; \
 						struct tsf_stream_memory mem = { TSF_NULL, 0, 0 }; \
 						struct tsf_stream ms = { TSF_NULL, (int(*)(void*,void*,unsigned int))&tsf_stream_memory_read, (int(*)(void*,unsigned int))&tsf_stream_memory_skip }; \
 						TSF_FREE(hydra.chunkName##s); /* a damaged font can repeat a chunk */ \
 						hydra.chunkName##s = TSF_NULL; hydra.chunkName##Num = 0; \
 						if (chunk.size > 0x7FFFFFFF) goto out_of_memory; \
 						if (!(mem.buffer = (const char*)TSF_MALLOC(chunk.size ? chunk.size : 1))) goto out_of_memory; \
-						if (!(hydra.chunkName##s = (struct tsf_hydra_##chunkName*)TSF_MALLOC((num ? num : 1) * sizeof(struct tsf_hydra_##chunkName)))) { TSF_FREE((void*)mem.buffer); goto out_of_memory; } \
-						got = stream->read(stream->data, (void*)mem.buffer, chunk.size); \
-						if (got < (int)chunk.size) TSF_MEMSET((char*)mem.buffer + (got > 0 ? got : 0), 0, chunk.size - (got > 0 ? got : 0)); \
+						if (stream->read(stream->data, (void*)mem.buffer, chunk.size) != (int)chunk.size || \
+							!(hydra.chunkName##s = (struct tsf_hydra_##chunkName*)TSF_MALLOC((num ? num : 1) * sizeof(struct tsf_hydra_##chunkName)))) { TSF_FREE((void*)mem.buffer); goto out_of_memory; } \
 						hydra.chunkName##Num = num; mem.total = chunk.size; ms.data = &mem; \
 						for (i = 0; i < num; ++i) tsf_hydra_read_##chunkName(&hydra.chunkName##s[i], &ms); \
 						TSF_FREE((void*)mem.buffer); \
