@@ -1,4 +1,4 @@
-/* TinyMidiLoader2 - v2.003 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
+/* TinyMidiLoader2 - v2.004 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TML_IMPLEMENTATION
@@ -481,14 +481,16 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 	{
 		tml_message *PrevMessage = TML_NULL, *Msg, *MsgEnd;
 		unsigned int ticks = 0, tempo_ticks = 0; //tick counter and value at last tempo change
-		int step_smallest, msec, tempo_msec = 0; //msec value at last tempo change
+		int step_smallest, msec;
+		double ms, tempo_msec = 0; //msec value at last tempo change, unrounded (the rounding would add up)
 		double ticks2time = (smpte_ms_per_tick ? smpte_ms_per_tick : 500000 / (1000.0 * division)); //milliseconds per tick
 
 		// Loop through all messages over all tracks ordered by time
 		for (step_smallest = 0; step_smallest != 0x7fffffff; ticks += step_smallest)
 		{
 			step_smallest = 0x7fffffff;
-			{ double ms = tempo_msec + (ticks - tempo_ticks) * ticks2time; msec = (ms < 2147483647.0 ? (int)ms : 2147483647); } // no int overflow (24 days)
+			ms = tempo_msec + (ticks - tempo_ticks) * ticks2time;
+			msec = (ms < 2147483647.0 ? (int)ms : 2147483647); // no int overflow (24 days)
 			for (t = tracks; t != tracksEnd; t++)
 			{
 				if (t->Idx == t->End) continue;
@@ -499,7 +501,7 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 					{
 						unsigned char* Tempo = ((struct tml_tempomsg*)Msg)->Tempo;
 						ticks2time = ((Tempo[0]<<16)|(Tempo[1]<<8)|Tempo[2])/(1000.0 * division);
-						tempo_msec = msec;
+						tempo_msec = ms;
 						tempo_ticks = ticks;
 					}
 					Msg->time = msec;

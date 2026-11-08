@@ -17,6 +17,8 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
 ## Generators
 
 - **All generators are supported**, including the instrument-level `keynum` and `velocity` generators. These make the note play, and the modulators see it, as the given key or velocity.
+- **Global zones:** the first zone of a preset (instrument) is the global zone when it has no `instrument` (`sampleID`) generator (7.3, 7.7). A first zone whose instrument or sample is invalid, or a ROM sample, is skipped like any other such zone; it is not taken as the global zone.
+- **Last generator:** `sampleID` ends an instrument zone and `instrument` a preset zone (7.9, 7.5). Generators after it, including a second `sampleID` or `instrument`, are ignored.
 - **Instrument-only generators** are ignored when they appear in presets (8.5). These are the sample address offsets, `sampleModes`, `exclusiveClass`, `overridingRootKey`, `keynum` and `velocity`.
 - **Address offsets:** a generator in a local zone replaces the one in the global zone, including the sample address offsets. The fine and coarse (×32768) offsets are added to the sample header's points, and every point is kept inside the sample's own data (between the header's start and end), so no offset reaches into a neighboring sample.
   - The loop may begin before the start point: playback runs into the loop and then loops. A start after the loop end begins inside the loop. A loop whose end lies beyond the played end, or that is empty, is dropped.
@@ -46,7 +48,7 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
   - The filter's Q value is solved from the peak height, so zero resonance gives a flat Butterworth response (−3 dB at the cutoff).
 - **Bypass:** at the maximum cutoff (13500 cents) with zero resonance the filter is skipped (8.1.2 #8). This is the default, so most voices pay nothing for the filter.
 - **Cutoff limits:** the cutoff, also when the LFO, envelope or modulators change it, is kept between 20 Hz and 45% of the sample rate.
-- **Starting mid-note:** when modulation brings a bypassed filter's cutoff below 13500 cents (or adds resonance) while the note plays, the filter starts in its steady state for the current sample instead of from zero, so the output doesn't step (a click).
+- **Starting mid-note:** when modulation brings a bypassed filter's cutoff below 13500 cents (or adds resonance) while the note plays, the filter starts in its steady state for the current sample instead of from zero, so the output doesn't step (a click). A filter whose cutoff the LFO or modulation envelope moves is switched on and off only by the render loop, once per block, so a controller change can't restart it.
 
 ### Pan
 
@@ -141,10 +143,10 @@ Creative never published the full unit table; the conversions follow the AWE32 p
 
 - **Sustain pedal (CC64) and Hold 2 (CC69):** Hold 2 holds notes the same way as sustain.
 - **Sostenuto (CC66):** pressing it captures the notes whose keys are down. Releasing it ends those whose keys were released in the meantime.
-- **Soft pedal (CC67):** not part of SoundFont 2.01. Notes started while it is pressed are up to 6 dB quieter and up to 360 cents darker.
+- **Soft pedal (CC67):** notes started while it is pressed are up to 6 dB quieter and up to 360 cents darker.
 - **Mono mode and legato:**
   - Mono mode (CC126/127) and the legato footswitch (CC68) make a key pressed while another is held continue the note at the new pitch, without restarting the envelope.
-  - Releasing that key returns to the previously held key; up to 8 held keys are remembered.
+  - Releasing that key returns to the previously held key; up to 8 held keys are remembered. Releasing the legato footswitch (also by Reset All Controllers) outside mono mode forgets them, as the keys aren't tracked in poly mode.
   - In mono mode, pressing the key that is already sounding again restarts the note (the old one is released), so a channel keeps one note.
   - A note kept by the sustain pedal or hold 2 after its key was let go counts as held too, so the next key continues it (one note sounds, as on a mono synth). A note kept by sostenuto stays as it is.
 - **Portamento:**
