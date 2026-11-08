@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.013 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.014 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -1440,7 +1440,26 @@ static void tsf_voice_envelope_update_parameters(struct tsf_voice_envelope* e, c
 {
 	e->parameters = *new_parameters;
 	tsf_envelope_tosecs(&e->parameters, midiNoteNumber, e->isAmpEnv);
-	if (e->segment == TSF_SEGMENT_SUSTAIN) e->level = e->parameters.sustain; // a modulated sustain level applies to sounding notes
+}
+
+// Modulated decay time and sustain level (real-time generators) apply to sounding notes: a decay goes on from its level with the
+// new slope to the new sustain level (if it is already at or below it, the sustain starts), a sustain moves to the new level
+static void tsf_voice_envelope_modulate(struct tsf_voice_envelope* e, const struct tsf_envelope* new_parameters, int midiNoteNumber, float outSampleRate)
+{
+	float samples, s;
+	tsf_voice_envelope_update_parameters(e, new_parameters, midiNoteNumber);
+	s = e->parameters.sustain;
+	if (e->segment == TSF_SEGMENT_SUSTAIN) e->level = s;
+	if (e->segment != TSF_SEGMENT_DECAY) return;
+	samples = e->parameters.decay * outSampleRate;
+	if (samples < 1.0f || e->level <= s) e->samplesUntilNextSegment = 0;
+	else if (e->isAmpEnv)
+	{
+		e->slope = -TSF_ENV_LN_100DB / samples;
+		e->slopeBlock = TSF_EXPF(e->slope * TSF_RENDER_EFFECTSAMPLEBLOCK);
+		e->samplesUntilNextSegment = (int)(TSF_LOGF((s > TSF_ENV_SILENCE ? s : TSF_ENV_SILENCE) / e->level) / e->slope);
+	}
+	else e->slope = -1.0f / samples, e->samplesUntilNextSegment = (int)((s - e->level) / e->slope);
 }
 
 static void tsf_voice_envelope_setup(struct tsf_voice_envelope* e, const struct tsf_envelope* new_parameters, int midiNoteNumber, short midiVelocity, TSF_BOOL isAmpEnv, float outSampleRate)
@@ -1759,8 +1778,8 @@ static void tsf_voice_modulate(tsf* f, struct tsf_voice* v, TSF_BOOL init)
 		tsf_voice_lowpass_update(&v->lowpass, n.initialFilterFc, n.initialFilterQ, f->outSampleRate, (init ? 0.0 : f->fontSamples[(unsigned int)(v->sourceSamplePosition >> 32)] * 32768.0), (TSF_BOOL)(n.modLfoToFilterFc || n.modEnvToFilterFc));
 	if (!init && n.freqModLFO != o->freqModLFO) v->modlfo.delta = (v->modlfo.delta < 0.0f ? -4.0f : 4.0f) * tsf_cents2Hertz((float)n.freqModLFO) / f->outSampleRate;
 	if (!init && n.freqVibLFO != o->freqVibLFO) v->viblfo.delta = (v->viblfo.delta < 0.0f ? -4.0f : 4.0f) * tsf_cents2Hertz((float)n.freqVibLFO) / f->outSampleRate;
-	if (!init && tsf_env_differs(&n.ampenv, &o->ampenv)) tsf_voice_envelope_update_parameters(&v->ampenv, &n.ampenv, v->key);
-	if (!init && tsf_env_differs(&n.modenv, &o->modenv)) tsf_voice_envelope_update_parameters(&v->modenv, &n.modenv, v->key);
+	if (!init && tsf_env_differs(&n.ampenv, &o->ampenv)) tsf_voice_envelope_modulate(&v->ampenv, &n.ampenv, v->key, f->outSampleRate);
+	if (!init && tsf_env_differs(&n.modenv, &o->modenv)) tsf_voice_envelope_modulate(&v->modenv, &n.modenv, v->key, f->outSampleRate);
 	v->chorusSend = n.chorusSend * 0.001f;
 	v->reverbSend = n.reverbSend * 0.001f;
 	*o = n;
@@ -2377,6 +2396,7 @@ TSFDEF void tsf_set_output(tsf* f, enum TSFOutputMode outputmode, int samplerate
 {
 	float newRate = (float)(samplerate < 1 ? 44100 : (samplerate > 10000000 ? 10000000 : samplerate)); // up to 10 MHz, so the longest times (101 s) fit the int sample counts
 	TSF_BOOL rateChange = (newRate != f->outSampleRate);
+	if (outputmode < 0 || outputmode > TSF_MONO) return;
 	if (f->fx && rateChange) // the effects' delay lines depend on the sample rate
 	{
 		TSF_FREE(f->fx->mem);

@@ -40,6 +40,7 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
 - **Times** are converted from timecents exactly: the minimum and default of −12000 is 1 ms (8.1.3, 8.5), so the default attack ramps in over 1 ms instead of starting with a step.
   - **−32768 means zero time** for the delays (both LFOs and both envelopes), attacks and holds, as 8.1.2 says by convention. It counts as such when the preset and instrument values and the modulators add up to −32768 or less (the hold after its key number scaling). Decay and release have no such convention, so −32768 there is clamped to 1 ms.
 - **Key number scaling** of hold and decay is applied in timecents before the conversion to seconds.
+- **Modulated decay and sustain:** the decay time and sustain level are real-time generators, so a modulator or NRPN that changes them applies to sounding notes. A note in its decay goes on from its current level with the new slope down to the new sustain level; if it is already at or below that level, it sustains at it at once. A sustaining note moves to the new level.
 
 ### Filter
 
