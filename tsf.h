@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.011 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.012 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -2983,6 +2983,7 @@ TSFDEF int tsf_channel_note_on(tsf* f, int channel, int key, float vel)
 	}
 	c = tsf_channel_init(f, channel); // a note on a channel that wasn't set up yet plays its default preset
 	if (!c) return 0;
+	if (key < 0 || key > 127) return 1;
 	cs = f->channels;
 	if (c->monoMode || c->cc[68] >= 64) // mono mode or legato footswitch
 	{
