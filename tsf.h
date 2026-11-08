@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.015 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.016 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -246,8 +246,8 @@ TSFDEF void tsf_render_float(tsf* f, float* buffer, int samples, int flag_mixing
 //   pitch_wheel: pitch wheel position 0 to 16383 (default 8192 unpitched)
 //   pitch_range: range of the pitch wheel in semitones (default 2.0, total +/- 2 semitones), the pitch wheel sensitivity source
 //   tuning: tuning of all playing voices in semitones (default 0.0, standard (A440) tuning)
-//   flag_sustain: 0 to end notes that were held sustained and disable holding sustain otherwise enable it
-//   sostenuto: pedal flag, sounding notes are held until it is released (even if their keys are released)
+//   flag_sustain: 0 to end notes that were held sustained and disable holding sustain otherwise enable it (also sets CC64 to 127/0)
+//   sostenuto: pedal flag, sounding notes are held until it is released (even if their keys are released) (also sets CC66 to 127/0)
 //   pressure: channel pressure (aftertouch) from 0 to 127
 //   (poly) pressure: polyphonic pressure from 0 to 127 for the playing notes of the given key
 //   (tsf_set_preset_number and set_bank_preset return 0 if preset does not exist, otherwise 1)
@@ -726,11 +726,11 @@ static void tsf_region_operator(struct tsf_region* region, tsf_u16 genOper, unio
 	#define _TSFREGIONADDROFFSET(I) (unsigned char)(offsetof(struct tsf_region,addrOfs) / sizeof(int) + (I)) // no subscript inside offsetof (not a constant for MSVC)
 	static const struct { unsigned char mode, offset; } genMetas[_GEN_MAX] =
 	{
-		{ GEN_INT                          , _TSFREGIONADDROFFSET(0)                          }, // 0 StartAddrsOffset
-		{ GEN_INT                          , _TSFREGIONADDROFFSET(1)                          }, // 1 EndAddrsOffset
-		{ GEN_INT                          , _TSFREGIONADDROFFSET(2)                          }, // 2 StartloopAddrsOffset
-		{ GEN_INT                          , _TSFREGIONADDROFFSET(3)                          }, // 3 EndloopAddrsOffset
-		{ GEN_INT                          , _TSFREGIONADDROFFSET(4)                          }, // 4 StartAddrsCoarseOffset
+		{ GEN_INT                          , _TSFREGIONADDROFFSET(0)                               }, // 0 StartAddrsOffset
+		{ GEN_INT                          , _TSFREGIONADDROFFSET(1)                               }, // 1 EndAddrsOffset
+		{ GEN_INT                          , _TSFREGIONADDROFFSET(2)                               }, // 2 StartloopAddrsOffset
+		{ GEN_INT                          , _TSFREGIONADDROFFSET(3)                               }, // 3 EndloopAddrsOffset
+		{ GEN_INT                          , _TSFREGIONADDROFFSET(4)                               }, // 4 StartAddrsCoarseOffset
 		{ GEN_INT   | GEN_INT_LIMIT12K     , _TSFREGIONOFFSET(         int, modLfoToPitch        ) }, // 5 ModLfoToPitch
 		{ GEN_INT   | GEN_INT_LIMIT12K     , _TSFREGIONOFFSET(         int, vibLfoToPitch        ) }, // 6 VibLfoToPitch
 		{ GEN_INT   | GEN_INT_LIMIT12K     , _TSFREGIONOFFSET(         int, modEnvToPitch        ) }, // 7 ModEnvToPitch
@@ -738,11 +738,11 @@ static void tsf_region_operator(struct tsf_region* region, tsf_u16 genOper, unio
 		{ GEN_INT   | GEN_INT_LIMITQ       , _TSFREGIONOFFSET(         int, initialFilterQ       ) }, // 9 InitialFilterQ
 		{ GEN_INT   | GEN_INT_LIMIT12K     , _TSFREGIONOFFSET(         int, modLfoToFilterFc     ) }, //10 ModLfoToFilterFc
 		{ GEN_INT   | GEN_INT_LIMIT12K     , _TSFREGIONOFFSET(         int, modEnvToFilterFc     ) }, //11 ModEnvToFilterFc
-		{ GEN_INT                          , _TSFREGIONADDROFFSET(5)                          }, //12 EndAddrsCoarseOffset
+		{ GEN_INT                          , _TSFREGIONADDROFFSET(5)                               }, //12 EndAddrsCoarseOffset
 		{ GEN_INT   | GEN_INT_LIMIT960     , _TSFREGIONOFFSET(         int, modLfoToVolume       ) }, //13 ModLfoToVolume
 		{ 0                                , (0                                                  ) }, //   Unused
-		{ GEN_FLOAT | GEN_FLOAT_MAX1000    , _TSFREGIONOFFSET(    float, chorusSend           ) }, //15 ChorusEffectsSend
-		{ GEN_FLOAT | GEN_FLOAT_MAX1000    , _TSFREGIONOFFSET(    float, reverbSend           ) }, //16 ReverbEffectsSend
+		{ GEN_FLOAT | GEN_FLOAT_MAX1000    , _TSFREGIONOFFSET(       float, chorusSend           ) }, //15 ChorusEffectsSend
+		{ GEN_FLOAT | GEN_FLOAT_MAX1000    , _TSFREGIONOFFSET(       float, reverbSend           ) }, //16 ReverbEffectsSend
 		{ GEN_FLOAT | GEN_FLOAT_LIMITPAN   , _TSFREGIONOFFSET(       float, pan                  ) }, //17 Pan
 		{ 0                                , (0                                                  ) }, //   Unused
 		{ 0                                , (0                                                  ) }, //   Unused
@@ -771,12 +771,12 @@ static void tsf_region_operator(struct tsf_region* region, tsf_u16 genOper, unio
 		{ 0                                , (0                                                  ) }, //   Reserved
 		{ GEN_KEYRANGE                     , (0                                                  ) }, //43 KeyRange
 		{ GEN_VELRANGE                     , (0                                                  ) }, //44 VelRange
-		{ GEN_INT                          , _TSFREGIONADDROFFSET(6)                          }, //45 StartloopAddrsCoarseOffset
+		{ GEN_INT                          , _TSFREGIONADDROFFSET(6)                               }, //45 StartloopAddrsCoarseOffset
 		{ GEN_INT                          , _TSFREGIONOFFSET(         int, fixedKey             ) }, //46 Keynum
 		{ GEN_INT                          , _TSFREGIONOFFSET(         int, fixedVel             ) }, //47 Velocity
 		{ GEN_FLOAT | GEN_FLOAT_LIMITATTN  , _TSFREGIONOFFSET(       float, attenuation          ) }, //48 InitialAttenuation
 		{ 0                                , (0                                                  ) }, //   Reserved
-		{ GEN_INT                          , _TSFREGIONADDROFFSET(7)                          }, //50 EndloopAddrsCoarseOffset
+		{ GEN_INT                          , _TSFREGIONADDROFFSET(7)                               }, //50 EndloopAddrsCoarseOffset
 		{ GEN_INT   | GEN_INT_LIMIT120     , _TSFREGIONOFFSET(         int, transpose            ) }, //51 CoarseTune
 		{ GEN_INT                          , _TSFREGIONOFFSET(         int, tune                 ) }, //52 FineTune
 		{ 0                                , (0                                                  ) }, //   SampleID (special)
@@ -2929,28 +2929,30 @@ static void tsf_channel_pedals_released(tsf* f, int channel, const struct tsf_ch
 			tsf_voice_end(f, v);
 }
 
+// Pressing sostenuto captures the notes sounding with their key down, releasing it ends those whose key was released meanwhile
+static void tsf_channel_sostenuto(tsf* f, int channel, struct tsf_channel* c, int flag_sostenuto)
+{
+	struct tsf_voice *v, *vEnd;
+	if (!c->sostenuto == !flag_sostenuto) return;
+	c->sostenuto = (unsigned short)(flag_sostenuto != 0);
+	for (v = f->voices, vEnd = v ? v + f->voiceNum : TSF_NULL; v != vEnd; v++)
+		if (v->playingPreset != -1 && v->playingChannel == channel && TSF_VOICE_KEYDOWN(v))
+			v->sostenuto = (unsigned char)(flag_sostenuto && !v->heldSustain);
+	tsf_channel_pedals_released(f, channel, c);
+}
+
 TSFDEF int tsf_channel_set_sustain(tsf* f, int channel, int flag_sustain)
 {
 	struct tsf_channel *c = tsf_channel_init(f, channel);
 	if (!c) return 0;
-	c->sustain = (unsigned short)(flag_sustain != 0);
-	tsf_channel_pedals_released(f, channel, c); //turning on sustain does nothing now, it only makes note off keep the notes
-	return 1;
+	return (!c->sustain == !flag_sustain ? 1 : tsf_channel_midi_control(f, channel, 64, flag_sustain ? 127 : 0));
 }
 
 TSFDEF int tsf_channel_set_sostenuto(tsf* f, int channel, int flag_sostenuto)
 {
 	struct tsf_channel *c = tsf_channel_init(f, channel);
-	struct tsf_voice *v, *vEnd;
 	if (!c) return 0;
-	if (!c->sostenuto == !flag_sostenuto) return 1;
-	c->sostenuto = (unsigned short)(flag_sostenuto != 0);
-	//Pressing the pedal captures the notes that are sounding with their key down, releasing it ends those whose key was released meanwhile
-	for (v = f->voices, vEnd = v ? v + f->voiceNum : TSF_NULL; v != vEnd; v++)
-		if (v->playingPreset != -1 && v->playingChannel == channel && TSF_VOICE_KEYDOWN(v))
-			v->sostenuto = (unsigned char)(flag_sostenuto && !v->heldSustain);
-	tsf_channel_pedals_released(f, channel, c);
-	return 1;
+	return (!c->sostenuto == !flag_sostenuto ? 1 : tsf_channel_midi_control(f, channel, 66, flag_sostenuto ? 127 : 0));
 }
 
 // Start a glide of cents (the pitch offset the note starts with, it moves to 0 linearly) for the voice being started or retargeted.
@@ -3261,7 +3263,7 @@ TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int con
 			if (control_value < 100) { c->nrpnSel = (unsigned short)(c->nrpnAcc + control_value); c->nrpnAcc = 0; }
 			else if (control_value <= 102) { c->nrpnAcc = (unsigned short)(c->nrpnAcc + (control_value == 100 ? 100 : (control_value == 101 ? 1000 : 10000))); c->nrpnSel = 0xFFFF; }
 			return 1;
-		case  64 /*SUSTAIN*/         : tsf_channel_set_sustain(f, channel, (int)(control_value >= 64)); return 1;
+		case  64 /*SUSTAIN*/         : c->sustain = (unsigned short)(control_value >= 64); tsf_channel_pedals_released(f, channel, c); return 1;
 		case  69 /*HOLD2*/           : c->hold2 = (unsigned short)(control_value >= 64); tsf_channel_pedals_released(f, channel, c); return 1;
 		case  68 /*LEGATO_SWITCH*/   : // poly mode: the keys are only tracked while the pedal is down
 			if (c->monoMode) return 1;
@@ -3286,7 +3288,7 @@ TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int con
 			goto TCMC_SET_DATA;
 		}
 		case 120 /*ALL_SOUND_OFF*/   : tsf_channel_sounds_off_all(f, channel); return 1;
-		case  66 /*SOSTENUTO*/       : tsf_channel_set_sostenuto(f, channel, (int)(control_value >= 64)); return 1;
+		case  66 /*SOSTENUTO*/       : tsf_channel_sostenuto(f, channel, c, (int)(control_value >= 64)); return 1;
 		case  84 /*PORTAMENTO_CTRL*/ : c->portaKey = (unsigned char)(control_value & 0x7F); return 1; // glide start key for the next note
 		case 123 /*ALL_NOTES_OFF*/   : // mode messages 124 to 127 also act as All Notes Off (MIDI 1.0)
 		case 124 /*OMNI_OFF*/        :
@@ -3296,9 +3298,9 @@ TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int con
 		case 121 /*ALL_CTRL_OFF*/    : // RP-015: bank, program, volume, pan, effect depths, sound controllers and RPN values (pitch range, tuning) are kept
 		{
 			int i;
-			c->hold2 = 0;
-			tsf_channel_set_sustain(f, channel, 0);
-			tsf_channel_set_sostenuto(f, channel, 0);
+			c->hold2 = c->sustain = 0;
+			if (c->sostenuto) tsf_channel_sostenuto(f, channel, c, 0);
+			else tsf_channel_pedals_released(f, channel, c);
 			for (i = 0; i != 120; i++)
 				if (i != 0 && i != 32 && i != 7 && i != 39 && i != 10 && i != 42 && !(i >= 70 && i <= 79) && !(i >= 91 && i <= 95)) c->cc[i] = 0;
 			c->cc[11] = 127; // expression
