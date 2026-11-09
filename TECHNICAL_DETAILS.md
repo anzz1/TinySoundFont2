@@ -40,11 +40,11 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
 - **Times** are converted from timecents exactly: the minimum and default of −12000 is 1 ms (8.1.3, 8.5), so the default attack ramps in over 1 ms instead of starting with a step.
   - **−32768 means zero time** for the delays (both LFOs and both envelopes), attacks and holds, as 8.1.2 says by convention. It counts as such when the preset and instrument values and the modulators add up to −32768 or less (the hold after its key number scaling). Decay and release have no such convention, so −32768 there is clamped to 1 ms.
 - **Key number scaling** of hold and decay is applied in timecents before the conversion to seconds.
-- **Modulated decay and sustain:** the decay time and sustain level are real-time generators, so a modulator or NRPN that changes them applies to sounding notes. A note in its decay goes on from its current level with the new slope down to the new sustain level; if it is already at or below that level, it sustains at it at once. A sustaining note moves to the new level.
+- **Modulated decay, sustain and release:** the decay time, sustain level and release time are real-time generators, so a modulator or NRPN that changes them applies to sounding notes. A note in its decay goes on from its current level with the new slope down to the new sustain level; if it is already at or below that level, it sustains at it at once. A sustaining note moves to the new level. A releasing note goes on from its current level at the new release rate, except for the quick 10 ms fades (All Sound Off, exclusive class), which stay quick.
 
 ### Filter
 
-- **Filter type:** a 2-pole (12 dB/octave) lowpass biquad.
+- **Filter type:** a 2-pole (12 dB/octave) lowpass with the bilinear transform response, run as a trapezoidal (TPT) state variable filter. Unlike a direct form biquad, it stays stable while the LFO, envelope or modulators move its cutoff.
 - **Resonance** is the height of the peak above the DC gain, in cB. The DC gain is lowered by half of the resonance (8.1.2 #9, 9.1.3): for 100 cB the DC gain is −5 dB and the peak is +5 dB.
   - The filter's Q value is solved from the peak height, so zero resonance gives a flat Butterworth response (−3 dB at the cutoff).
 - **Bypass:** at the maximum cutoff (13500 cents) with zero resonance the filter is skipped (8.1.2 #8). This is the default, so most voices pay nothing for the filter.
@@ -94,7 +94,7 @@ All of them are implemented except for two deliberate deviations:
   - An LSB of 0–99 completes the number, so `100, 50` selects generator 150.
 - **Applying a value:** data entry is applied when the MSB (CC6) arrives, combined with the most recent LSB (CC38). (For the RPNs the MSB sets the LSB to 0 first, as MIDI 1.0 requires, and an LSB sent after it completes the value.) The value minus 8192 is multiplied by a per-generator scale and added to the generator like a modulator output.
 - **Scale:** the spec halves the useful range until it fits 8192 steps. The scale values are 1, 2 or 4 units per step.
-- **Ignored targets:** generators that are not real-time parameters are ignored. These are the sample offsets, key/velocity ranges, `keynum`, `velocity`, `sampleModes`, `scaleTuning`, `exclusiveClass` and the root key.
+- **Ignored targets:** selecting a generator that is not a real-time parameter, or an unknown one, is ignored: the previous selection stays, as 9.6.2 says. These are the sample offsets, key/velocity ranges, `keynum`, `velocity`, `sampleModes`, `scaleTuning`, `exclusiveClass`, the root key and the unused numbers.
 - **Interaction with RPNs:** selecting an RPN afterwards takes over the data entry. The [AWE32 NRPN](#awe32-nrpn) set (MSB 127) is supported separately. Other NRPN MSB values are ignored.
 - **Reset:** Reset All Controllers (CC121) clears the NRPN offsets.
 
@@ -150,10 +150,10 @@ Creative never published the full unit table; the conversions follow the AWE32 p
   - Releasing that key returns to the previously held key; up to 8 held keys are remembered. In poly mode the keys are tracked only while the legato footswitch is down: pressing it remembers the keys already held, and releasing it (also by Reset All Controllers) forgets them. A key held from before the pedal can still sound its own note; releasing the top key then ends the legato note instead of moving it onto that key.
   - In mono mode, pressing the key that is already sounding again restarts the note (the old one is released), so a channel keeps one note.
   - A note kept by the sustain pedal or hold 2 after its key was let go counts as held too, so the next key continues it (one note sounds, as on a mono synth). A note kept by sostenuto stays as it is. When there are several such notes, the one whose key is down (the one sounding as the top key) continues; releasing the top key always returns that same note to the previous key.
-  - A key outside the key range of a zone of the sounding note (another sample of a multisampled instrument, or no zone at all) isn't played legato, as stretching the old sample would play the wrong sound: the note is released and the key starts as a new note (with portamento on, gliding from the previous key). Returning to a held key in another zone when the top key is released works the same way.
+  - Only the zones that cover the new key continue: a voice whose zone doesn't (another sample of a multisampled instrument) is released, as stretching the old sample would play the wrong sound. A zone of the note's preset that covers the new key but not the old one (a layer) starts, with the note's velocity, gliding along with the others. If no voice can continue (a key in another zone, or in no zone at all), the note is released and the key starts as a new note (with portamento on, gliding from the previous key). Returning to a held key when the top key is released works the same way. A zone that covers both keys but whose voice has already ended (a short attack layer) isn't started again, so legato never re-attacks.
 - **Portamento:**
-  - CC65 switches it on. Notes glide from the previous note.
-  - CC84 (Portamento Control) gives the key the next note glides from, also while CC65 is off (MIDI 1.0). If a note on that key is sounding, it glides to the new key without re-attacking and no new voice starts.
+  - CC65 switches it on. Notes glide from the previous note: the key that sounded last, which after a legato return to a held key is that key.
+  - CC84 (Portamento Control) gives the key the next note glides from, also while CC65 is off (MIDI 1.0); a legato return to a held key (a note off) leaves it for the next note on. If a note on that key is sounding, it glides to the new key without re-attacking and no new voice starts (other than for a layer, as in legato).
   - The glide time is CC5 (MSB) / CC37 (LSB) as a 14-bit value in milliseconds.
 - **RPNs:**
   - RPN 0: pitch bend range (MSB in semitones, LSB in cents).
@@ -212,7 +212,7 @@ Creative never published the full unit table; the conversions follow the AWE32 p
 - **Block processing:** envelopes, LFOs, filter coefficients and pitch are updated every 64 samples (`TSF_RENDER_EFFECTSAMPLEBLOCK`). The gain ramps linearly within each block, which avoids zipper noise and clicks.
 - **Silent blocks:** during an envelope delay or at zero volume, a voice that bypasses the filter skips interpolation and only advances its position.
 - **Inner loop:** within a block, the samples that can't reach the loop end or the sample end are rendered as one run without the end test and the loop wrap. There is one loop with the filter and one without, so voices that bypass the filter don't test for it per sample. A step longer than the loop (a short loop played very high) still wraps into the loop.
-- **Filter precision:** the biquad runs in double precision. Single precision would be about 10% faster on filtered voices, but at low cutoffs (20–50 Hz, especially with resonance or at 96 kHz) its error comes within 4–44 dB of the signal.
+- **Filter precision:** the filter runs in double precision. Single precision would be about 10% faster on filtered voices, with an error 100–140 dB below the signal without resonance, but only 67–80 dB below it with a high resonance (30–96 dB) at low cutoffs.
 - **Effects:** each comb, allpass and chorus line runs over the whole effects block with its state in local variables, the four combs of a side together so their feedback paths overlap.
 - **Sample buffer:** it has one extra zero sample at the end, so interpolation never reads past the sample data.
 - **Output settings:** `tsf_set_output` and `tsf_set_volume` change the global gain of the sounding notes too. A different sample rate fades out the sounding notes (10 ms), because their pitch, envelopes, LFOs and filter are computed in samples at the old rate; new notes play at the new rate.
@@ -231,7 +231,7 @@ With `stb_vorbis.c` included before `tsf.h`, two compressed formats load as well
 
 ## API arguments
 
-- **Out of range values:** channel numbers outside 0 to `TSF_MAX_CHANNELS` - 1 and preset indices that don't exist are rejected (the function returns 0). Controller values are clamped to 0–127, the pitch wheel to 0–16383, pressure to 0–127.
+- **Out of range values:** channel numbers outside 0 to `TSF_MAX_CHANNELS` - 1 and preset indices that don't exist are rejected. Controller values are clamped to 0–127, the pitch wheel to 0–16383, pressure to 0–127.
 - **Velocity:** 0, a negative value or NaN is a note off; any positive velocity plays, at MIDI velocity 1 or more.
 - **Float arguments:** an infinite or NaN pan, volume, pitch range, tuning or gain is ignored. The global gain is kept between −200 and +100 dB, so changing it back restores the sounding notes exactly. A volume of 0 is −200 dB, so a muted channel stays silent under any global gain. Effect settings are clamped (NaN as 0).
 - **Pitch:** the playback speed is capped at 2^23 times the sample rate, so no tuning can overflow the 32.32 fixed-point position.

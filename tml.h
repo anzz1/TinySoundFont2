@@ -1,4 +1,4 @@
-/* TinyMidiLoader2 - v2.005 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
+/* TinyMidiLoader2 - v2.006 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TML_IMPLEMENTATION
@@ -397,8 +397,9 @@ static int tml_parsemessage(tml_message** f, struct tml_parser* p)
 		}
 	}
 
-	if (!evt->type) { p->skipped_time += deltatime; return 0; } //not stored, its time is kept by the next message of the track
-	evt->time = deltatime + p->skipped_time;
+	deltatime = (int)((unsigned int)deltatime > p->max_delta - p->skipped_time ? p->max_delta : p->skipped_time + deltatime); // with the time of the events not stored (within the delta limit, a longer sum would wrap)
+	if (!evt->type) { p->skipped_time = (unsigned int)deltatime; return 0; } //not stored, its time is kept by the next message of the track
+	evt->time = (unsigned int)deltatime;
 	p->skipped_time = 0;
 	p->message_count++;
 	return evt->type;
