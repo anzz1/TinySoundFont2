@@ -201,7 +201,7 @@ Creative never published the full unit table; the conversions follow the AWE32 p
   - Disabling both with `tsf_set_reverb` and `tsf_set_chorus` frees that memory.
 - **CPU use only while needed:**
   - Voices that send nothing take a render path without send buffers.
-  - The effects don't run at all while no voice sends to them.
+  - The effects don't run at all while no voice sends to them. A send to an effect that is disabled or has a wet level of 0 doesn't count, and the voice doesn't mix into its buffer.
   - Once nothing sends, they stop after their output has stayed below −100 dB for 0.1 s, and their buffers are cleared.
   - A font that zeroes its send modulators, such as a "GS wavetable" style font, therefore never runs the effects.
 

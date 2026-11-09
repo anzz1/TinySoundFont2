@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.017 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.018 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -860,7 +860,7 @@ static void tsf_envelope_tosecs(struct tsf_envelope* p, int key, TSF_BOOL isAmpE
 // ---------------------------------------------------------------------------------------------------------
 // Modulators (SoundFont 2.01 section 8), load time part
 
-#define TSF_MAXMODS 48 // modulators per list, any additional ones in a SoundFont are ignored
+#define TSF_MAXMODS 64 // modulators per list, any additional ones in a SoundFont are ignored
 #define TSF_MODEND  0xFFFF
 struct tsf_modlist { int num; struct tsf_mod mods[TSF_MAXMODS]; };
 
@@ -1831,7 +1831,7 @@ static float tsf_voice_gain(const struct tsf_voice* v, float noteGain, float mod
 	return v->ampenv.level * (modLfoToVolumeDB != 0.0f ? tsf_decibelsToGain(v->noteGainDB + v->modlfo.level * modLfoToVolumeDB) : noteGain);
 }
 
-// sendC and sendV (interleaved stereo pairs) both have to be given or both be NULL; the send a voice doesn't use is not touched
+// sendC and sendV: interleaved stereo pairs, NULL for an effect that doesn't run; the send a voice doesn't use is not touched
 static void tsf_voice_render(tsf* f, struct tsf_voice* v, float* outputBuffer, int numSamples, int stride, float* sendC, float* sendV)
 {
 	struct tsf_region* region = &v->mr;
@@ -1839,7 +1839,7 @@ static void tsf_voice_render(tsf* f, struct tsf_voice* v, float* outputBuffer, i
 	float* outL = outputBuffer;
 	float* outR = (f->outputmode == TSF_STEREO_UNWEAVED ? outL + stride : TSF_NULL);
 	float chorusSend = v->chorusSend, reverbSend = v->reverbSend;
-	int sendKind = (!sendC || !sendV ? 0 : (chorusSend > 0.0f ? (reverbSend > 0.0f ? 3 : 2) : (reverbSend > 0.0f ? 1 : 0))); /* 1 reverb, 2 chorus, 3 both */
+	int sendKind = (sendV && reverbSend > 0.0f ? 1 : 0) | (sendC && chorusSend > 0.0f ? 2 : 0); // 1 reverb, 2 chorus, 3 both
 
 	// Cache some values, to give them at least some chance of ending up in registers.
 	// The mod envelope and LFOs run also at zero depth: modulators and NRPNs can set a depth mid-note
@@ -2660,12 +2660,14 @@ TSFDEF void tsf_render_float(tsf* f, float* buffer, int samples, int flag_mixing
 	struct tsf_fx* fx = f->fx;
 	int channels = (f->outputmode == TSF_MONO ? 1 : 2), offset = 0, total = samples;
 	int idleLimit = (fx ? (int)(f->outSampleRate * TSF_FX_QUIET_SECONDS) : 0);
+	TSF_BOOL doReverb = (fx && fx->reverbEnabled && fx->reverbWet > 0.0f), doChorus = (fx && fx->chorusEnabled && fx->chorusWet > 0.0f); // as tsf_fx_process
 	if (samples <= 0) return;
 	if (!flag_mixing) TSF_MEMSET(buffer, 0, channels * sizeof(float) * samples);
-	if (fx && (fx->reverbEnabled || fx->chorusEnabled) && fx->idle >= idleLimit) // without a tail, check if anything sends at all
+	#define TSF_VOICE_SENDS(v) (v->playingPreset != -1 && ((doChorus && v->chorusSend > 0.0f) || (doReverb && v->reverbSend > 0.0f))) // to an effect that runs
+	if ((doReverb || doChorus) && fx->idle >= idleLimit) // without a tail, check if anything sends at all
 		for (v = f->voices; v != vEnd; v++)
-			if (v->playingPreset != -1 && (v->chorusSend > 0.0f || v->reverbSend > 0.0f)) { fx->idle = 0; break; }
-	if (!fx || !(fx->reverbEnabled || fx->chorusEnabled) || fx->idle >= idleLimit)
+			if (TSF_VOICE_SENDS(v)) { fx->idle = 0; break; }
+	if (!(doReverb || doChorus) || fx->idle >= idleLimit)
 	{
 		for (v = f->voices; v != vEnd; v++)
 			if (v->playingPreset != -1)
@@ -2683,8 +2685,8 @@ TSFDEF void tsf_render_float(tsf* f, float* buffer, int samples, int flag_mixing
 		for (v = f->voices; v != vEnd; v++)
 			if (v->playingPreset != -1)
 			{
-				tsf_voice_render(f, v, out, block, total, chorusSend, reverbSend);
-				if (v->playingPreset != -1 && (v->chorusSend > 0.0f || v->reverbSend > 0.0f)) sending = TSF_TRUE;
+				tsf_voice_render(f, v, out, block, total, (doChorus ? chorusSend : TSF_NULL), (doReverb ? reverbSend : TSF_NULL));
+				if (TSF_VOICE_SENDS(v)) sending = TSF_TRUE;
 			}
 		if (fx->idle < idleLimit || sending)
 		{
@@ -2707,12 +2709,13 @@ TSFDEF void tsf_render_float(tsf* f, float* buffer, int samples, int flag_mixing
 		if (f->outputmode != TSF_STEREO_UNWEAVED) buffer += block * channels;
 		offset += block; samples -= block;
 	}
+	#undef TSF_VOICE_SENDS
 }
 
+#define TSF_FXCLAMP(x) (!((x) > 0.0f) ? 0.0f : ((x) > 1.0f ? 1.0f : (x))) // NaN as 0
 TSFDEF void tsf_set_reverb(tsf* f, int enabled, float room_size, float damping, float width, float wet)
 {
 	struct tsf_fx* fx;
-	#define TSF_FXCLAMP(x) (!((x) > 0.0f) ? 0.0f : ((x) > 1.0f ? 1.0f : (x))) // NaN as 0
 	if (!f) return;
 	if (!(fx = tsf_fx_get(f, enabled))) return;
 	fx->reverbEnabled = (enabled != 0); fx->roomSize = TSF_FXCLAMP(room_size); fx->damping = TSF_FXCLAMP(damping); fx->width = TSF_FXCLAMP(width); fx->reverbWet = TSF_FXCLAMP(wet);
@@ -2725,9 +2728,9 @@ TSFDEF void tsf_set_chorus(tsf* f, int enabled, float depth, float rate, float w
 	if (!f) return;
 	if (!(fx = tsf_fx_get(f, enabled))) return;
 	fx->chorusEnabled = (enabled != 0); fx->chorusDepth = TSF_FXCLAMP(depth); fx->chorusRate = (!(rate > 0.0f) ? 0.0f : (rate > 5.0f ? 5.0f : rate)); fx->chorusWet = TSF_FXCLAMP(wet);
-	#undef TSF_FXCLAMP
 	tsf_fx_release_if_unused(f);
 }
+#undef TSF_FXCLAMP
 
 TSFDEF void tsf_reset_effects(tsf* f)
 {
