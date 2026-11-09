@@ -228,7 +228,7 @@ With `stb_vorbis.c` included before `tsf.h`, two compressed formats load as well
 - **Damaged files:** a compressed sample whose sample header points outside the data is left out. A truncated stream plays what decodes; regions whose samples lie past that are dropped.
 - **RIFF padding:** a chunk of odd size, common for compressed data, is followed by a pad byte as RIFF specifies; files written without it (as SFOTool does) load too.
 - **Both stb_vorbis APIs** work: the default pull API and the pushdata-only build (`STB_VORBIS_NO_PULLDATA_API`).
-- **Sample data:** a plain SF2 font loads as it does without Vorbis support, its 16-bit samples used as they are. Compressed fonts are decoded to floats and then converted to 16-bit once while loading, rounded. Lossy compression occasionally decodes a sample slightly beyond full scale; such samples are clipped to full scale, which brings them closer to the original 16-bit samples.
+- **Sample data:** a plain SF2 font loads as it does without Vorbis support, its 16-bit samples used as they are. Compressed fonts are decoded to 16-bit samples while loading, rounded (at most 2^30 samples, about 6.7 hours at 44.1 kHz; more fails the load). Lossy compression occasionally decodes a sample slightly beyond full scale; such samples are clipped to full scale, which brings them closer to the original 16-bit samples.
 - **Without `stb_vorbis.c`:** an SFO font is rejected, as is an SF3 if it contains a compressed sample.
 
 ## API arguments

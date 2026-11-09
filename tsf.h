@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.019 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.020 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -1189,9 +1189,20 @@ out_of_memory:
 }
 
 #ifdef STB_VORBIS_INCLUDE_STB_VORBIS_H
-static int tsf_decode_ogg(const tsf_u8 *pSmpl, const tsf_u8 *pSmplEnd, float** pRes, tsf_u32* pResNum, tsf_u32* pResMax, tsf_u32 resInitial)
+#define TSF_MAX_DECODED 0x3FFFFFFF // decoded samples (2 GB)
+// The output grows by half, trimmed at the end
+#define TSF_DECODE_GROW(res, oldres, resNum, resMax, resInitial, fail) \
+	if (resNum > resMax) \
+	{ \
+		resMax = (resMax ? resMax + resMax / 2 : resInitial); if (resMax < resNum) resMax = resNum; if (resMax > TSF_MAX_DECODED) resMax = TSF_MAX_DECODED; \
+		oldres = res; \
+		if (!(res = (short*)TSF_REALLOC(res, resMax * sizeof(short)))) { TSF_FREE(oldres); fail } \
+	}
+
+// Decode an Ogg Vorbis stream to 16-bit samples appended to *pRes
+static int tsf_decode_ogg(const tsf_u8 *pSmpl, const tsf_u8 *pSmplEnd, short** pRes, tsf_u32* pResNum, tsf_u32* pResMax, tsf_u32 resInitial)
 {
-	float *res = *pRes, *oldres; tsf_u32 resNum = *pResNum; tsf_u32 resMax = *pResMax; stb_vorbis *v;
+	short *res = *pRes, *oldres, *out; tsf_u32 resNum = *pResNum; tsf_u32 resMax = *pResMax; stb_vorbis *v;
 
 	// Use whatever stb_vorbis API that is available (either pull or push)
 	#if !defined(STB_VORBIS_NO_PULLDATA_API) && !defined(STB_VORBIS_NO_FROMMEMORY)
@@ -1203,7 +1214,7 @@ static int tsf_decode_ogg(const tsf_u8 *pSmpl, const tsf_u8 *pSmplEnd, float** p
 
 	for (;;)
 	{
-		float** outputs; int n_samples;
+		float** outputs; const float* in; int n_samples;
 
 		// Decode one frame of vorbis samples with whatever stb_vorbis API that is available
 		#if !defined(STB_VORBIS_NO_PULLDATA_API) && !defined(STB_VORBIS_NO_FROMMEMORY)
@@ -1215,27 +1226,23 @@ static int tsf_decode_ogg(const tsf_u8 *pSmpl, const tsf_u8 *pSmplEnd, float** p
 		if (!n_samples) continue;
 		#endif
 
-		// Expand our output buffer if necessary then copy over the decoded frame samples
+		// Expand the output buffer if necessary, then convert the frame to 16-bit, rounded and clipped (NaN as 0)
+		if ((tsf_u32)n_samples > TSF_MAX_DECODED - resNum) { TSF_FREE(res); *pRes = TSF_NULL; stb_vorbis_close(v); return 0; }
 		resNum += n_samples;
-		if (resNum > resMax)
-		{
-			do { resMax += (resMax ? (resMax < 1048576 ? resMax : 1048576) : resInitial); } while (resNum > resMax);
-			oldres = res;
-			res = (float*)TSF_REALLOC(res, resMax * sizeof(float));
-			if (!res) { TSF_FREE(oldres); *pRes = TSF_NULL; stb_vorbis_close(v); return 0; }
-		}
-		TSF_MEMCPY(res + resNum - n_samples, outputs[0], n_samples * sizeof(float));
+		TSF_DECODE_GROW(res, oldres, resNum, resMax, resInitial, *pRes = TSF_NULL; stb_vorbis_close(v); return 0;)
+		for (in = outputs[0], out = res + resNum - n_samples; out != res + resNum; in++)
+			{ float x = *in * 32768.0f; *(out++) = (short)(x > -32767.5f ? (x < 32766.5f ? (int)(x + (x < 0.0f ? -0.5f : 0.5f)) : 32767) : (x <= -32767.5f ? -32768 : 0)); }
 	}
 	stb_vorbis_close(v);
 	*pRes = res; *pResNum = resNum; *pResMax = resMax;
 	return 1;
 }
 
-static int tsf_decode_sf3_samples(const void* rawBuffer, float** pFloatBuffer, unsigned int* pSmplCount, struct tsf_hydra *hydra)
+static int tsf_decode_sf3_samples(const void* rawBuffer, short** pSampleBuffer, unsigned int* pSmplCount, struct tsf_hydra *hydra)
 {
 	const tsf_u8* smplBuffer = (const tsf_u8*)rawBuffer;
 	tsf_u32 smplLength = *pSmplCount, smplShorts = smplLength / 2, resNum = 0, resMax = 0, resInitial = (smplLength > 0x100000 ? (smplLength & ~0xFFFFF) : 65536);
-	float *res = TSF_NULL, *oldres;
+	short *res = TSF_NULL, *oldres;
 	int i, shdrLast = hydra->shdrNum - 1, is_sf3 = 0;
 	for (i = 0; i <= shdrLast; i++)
 	{
@@ -1256,7 +1263,7 @@ static int tsf_decode_sf3_samples(const void* rawBuffer, float** pFloatBuffer, u
 		}
 		else // raw PCM sample (16-bit units; positions are kept as they are until a compressed sample moved them)
 		{
-			tsf_u32 from, to, oldResNum = resNum; float *out; const short *in;
+			tsf_u32 from, to, oldResNum = resNum; short *out; const short *in;
 			if (is_sf3 && i == shdrLast) continue; // the terminal record, the rest of the buffer is compressed data
 			from = (is_sf3 ? shdr->start : resNum);
 			to = (i == shdrLast ? smplShorts : (shdr->end >= shdr->endLoop ? shdr->end : shdr->endLoop));
@@ -1271,33 +1278,28 @@ static int tsf_decode_sf3_samples(const void* rawBuffer, float** pFloatBuffer, u
 				shdr->endLoop += fix_offset;
 			}
 
-			// expand our output buffer if necessary then convert the PCM data from short to float
+			// expand the output buffer if necessary, then copy the PCM data
+			if (to - from > TSF_MAX_DECODED - resNum) { TSF_FREE(res); return 0; }
 			resNum += to - from;
-			if (resNum > resMax)
-			{
-				do { resMax += (resMax ? (resMax < 1048576 ? resMax : 1048576) : resInitial); } while (resNum > resMax);
-				oldres = res;
-				res = (float*)TSF_REALLOC(res, resMax * sizeof(float));
-				if (!res) { TSF_FREE(oldres); return 0; }
-			}
+			TSF_DECODE_GROW(res, oldres, resNum, resMax, resInitial, return 0;)
 			for (in = (const short*)smplBuffer + from, out = res + oldResNum; out != res + resNum;)
-				*(out++) = (float)((short)TSF_SWAP16LE(*(in++)) / 32768.0f);
+				*(out++) = (short)TSF_SWAP16LE(*(in++));
 		}
 	}
 
 	// Trim the sample buffer down then return success (unless out of memory)
-	if (!(*pFloatBuffer = (float*)TSF_REALLOC(res, (resNum + 1) * sizeof(float)))) { TSF_FREE(res); return 0; }
-	(*pFloatBuffer)[resNum] = 0.0f; // one extra zero sample for the interpolation at the very end
+	if (!(*pSampleBuffer = (short*)TSF_REALLOC(res, (resNum + 1) * sizeof(short)))) { TSF_FREE(res); return 0; }
+	(*pSampleBuffer)[resNum] = 0; // one extra zero sample for the interpolation at the very end
 	*pSmplCount = resNum;
 	return 1;
 }
 #endif
 
-static int tsf_load_samples(void** pRawBuffer, float** pSampleBuffer /* floats when decoded from Vorbis, else 16-bit */, unsigned int* pSmplCount, struct tsf_riffchunk *chunkSmpl, struct tsf_stream* stream)
+static int tsf_load_samples(void** pRawBuffer, short** pSampleBuffer, unsigned int* pSmplCount, struct tsf_riffchunk *chunkSmpl, struct tsf_stream* stream)
 {
 	#ifdef STB_VORBIS_INCLUDE_STB_VORBIS_H
 	// With OGG Vorbis support we cannot pre-allocate the memory for tsf_decode_sf3_samples
-	tsf_u32 resNum, resMax; float* oldres;
+	tsf_u32 resNum, resMax; short* oldres;
 	*pSmplCount = chunkSmpl->size;
 	if (*pSmplCount > 0x7FFFFFFF) return 0; // no wrap on 32-bit, and the int read result
 	*pRawBuffer = (void*)TSF_MALLOC(*pSmplCount + sizeof(short)); // room for the extra zero sample if these are plain 16-bit samples
@@ -1308,19 +1310,19 @@ static int tsf_load_samples(void** pRawBuffer, float** pSampleBuffer /* floats w
 	resNum = resMax = 0;
 	if (tsf_decode_ogg((tsf_u8*)*pRawBuffer, (tsf_u8*)*pRawBuffer + chunkSmpl->size, pSampleBuffer, &resNum, &resMax, 65536) != 1) return 0;
 	oldres = *pSampleBuffer;
-	if (!(*pSampleBuffer = (float*)TSF_REALLOC(*pSampleBuffer, (resNum + 1) * sizeof(float)))) { TSF_FREE(oldres); return 0; }
-	(*pSampleBuffer)[resNum] = 0.0f; // one extra zero sample for the interpolation at the very end
+	if (!(*pSampleBuffer = (short*)TSF_REALLOC(*pSampleBuffer, (resNum + 1) * sizeof(short)))) { TSF_FREE(oldres); return 0; }
+	(*pSampleBuffer)[resNum] = 0; // one extra zero sample for the interpolation at the very end
 	*pSmplCount = resNum;
 	return 1;
 	#else
 	// The samples stay 16-bit like in the file (byte-swapped in place on big-endian machines)
-	float *res; short *out; const short *in;
+	short *out, *end;
 	(void)pRawBuffer;
 	*pSmplCount = chunkSmpl->size / (unsigned int)sizeof(short);
 	if (chunkSmpl->size > 0x7FFFFFFF) return 0; // no wrap on 32-bit, and the int read result
-	*pSampleBuffer = (float*)TSF_MALLOC((*pSmplCount + 1) * sizeof(short)); // kept as 16-bit, with one extra zero sample for the interpolation at the very end
+	*pSampleBuffer = (short*)TSF_MALLOC((*pSmplCount + 1) * sizeof(short)); // with one extra zero sample for the interpolation at the very end
 	if (!*pSampleBuffer || !chunkSmpl->size || stream->read(stream->data, *pSampleBuffer, chunkSmpl->size) != (int)chunkSmpl->size) return 0; // also a truncated file
-	for (res = *pSampleBuffer, out = (short*)res, in = (short*)res + *pSmplCount; out != in; out++) *out = (short)TSF_SWAP16LE(*out);
+	for (out = *pSampleBuffer, end = out + *pSmplCount; out != end; out++) *out = (short)TSF_SWAP16LE(*out);
 	*out = 0;
 	return 1;
 	#endif
@@ -2180,7 +2182,7 @@ TSFDEF tsf* tsf_load(struct tsf_stream* stream)
 	struct tsf_riffchunk chunkList;
 	struct tsf_hydra hydra;
 	void* rawBuffer = TSF_NULL;
-	float* sampleBuffer = TSF_NULL; // floats while decoding Vorbis, else (and at the end) 16-bit samples
+	short* sampleBuffer = TSF_NULL; // the 16-bit samples (decoded if compressed)
 	tsf_u32 smplCount = 0;
 
 	if (!tsf_riffchunk_read(TSF_NULL, &chunkHead, stream) || !TSF_FourCCEquals(chunkHead.id, "sfbk"))
@@ -2262,10 +2264,9 @@ TSFDEF tsf* tsf_load(struct tsf_stream* stream)
 			short *s = (short*)rawBuffer, *sEnd = s + (smplCount /= sizeof(short));
 			for (; s != sEnd; s++) *s = (short)TSF_SWAP16LE(*s);
 			*s = 0; // one extra zero sample for the interpolation at the very end
-			sampleBuffer = (float*)rawBuffer, rawBuffer = TSF_NULL;
+			sampleBuffer = (short*)rawBuffer, rawBuffer = TSF_NULL;
 		}
 		else if (!sampleBuffer && !tsf_decode_sf3_samples(rawBuffer, &sampleBuffer, &smplCount, &hydra)) goto out_of_memory;
-		else j = -1; // decoded to floats
 		#else
 		int j = 0; // a compressed sample (SF3) can't play without Vorbis support: reject the font
 		while (j != hydra.shdrNum && !(hydra.shdrs[j].sampleType & 0x10)) j++;
@@ -2275,15 +2276,7 @@ TSFDEF tsf* tsf_load(struct tsf_stream* stream)
 		if (res) TSF_MEMSET(res, 0, sizeof(tsf));
 		if (!res || !tsf_load_presets(res, &hydra, smplCount)) goto out_of_memory;
 		res->outSampleRate = 44100.0f;
-		#ifdef STB_VORBIS_INCLUDE_STB_VORBIS_H
-		if (j < 0)
-		{ // the decoded samples are floats: convert them to 16-bit in place (each short is written where its float was already read)
-			short* out = (short*)sampleBuffer; unsigned int i; void* shrunk;
-			for (i = 0; i <= smplCount; i++) { float v = sampleBuffer[i] * 32768.0f; out[i] = (short)(v >= 32767.0f ? 32767 : v <= -32768.0f ? -32768 : (int)(v + (v < 0 ? -0.5f : 0.5f))); }
-			shrunk = TSF_REALLOC(sampleBuffer, (smplCount + 1) * sizeof(short)); if (shrunk) sampleBuffer = (float*)shrunk;
-		}
-		#endif
-		res->fontSamples = (short*)sampleBuffer;
+		res->fontSamples = sampleBuffer;
 		{ struct tsf_fx* fx = tsf_fx_get(res, 1); if (fx) fx->reverbEnabled = fx->chorusEnabled = 1; } // built-in effects on by default (none if out of memory)
 		sampleBuffer = TSF_NULL; // don't free below
 	}
