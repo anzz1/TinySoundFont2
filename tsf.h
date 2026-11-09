@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.018 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.019 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -251,7 +251,7 @@ TSFDEF void tsf_render_float(tsf* f, float* buffer, int samples, int flag_mixing
 //   pressure: channel pressure (aftertouch) from 0 to 127
 //   (poly) pressure: polyphonic pressure from 0 to 127 for the playing notes of the given key
 //   (tsf_set_preset_number and set_bank_preset return 0 if preset does not exist, otherwise 1)
-//   (tsf_channel_set_... return 0 if a new channel needed allocation and that failed, otherwise 1)
+//   (tsf_channel_set_... return 0 if a new channel needed allocation and that failed, or if the value is invalid, otherwise 1)
 TSFDEF int tsf_channel_set_presetindex(tsf* f, int channel, int preset_index);
 TSFDEF int tsf_channel_set_presetnumber(tsf* f, int channel, int preset_number, int flag_mididrums CPP_DEFAULT0);
 TSFDEF int tsf_channel_set_bank(tsf* f, int channel, int bank);
@@ -568,7 +568,7 @@ struct tsf_region
 	unsigned int sample_start, sample_end; // the sample's own data (the sample header's start and end), all positions stay inside it
 	int addrOfs[8]; // address offset generators: start, end, loop start, loop end (fine), then the same in 32768 steps (coarse)
 	int transpose, tune, pitch_keycenter, pitch_keytrack;
-	int fixedKey, fixedVel; // keynum and velocity generators: the key/velocity the note is played as, -1 if not set
+	int fixedKey, fixedVel; // keynum and velocity generators: the key/velocity the note is played as, -1 if not set (or illegal)
 	float attenuation, pan;
 	struct tsf_envelope ampenv, modenv;
 	int initialFilterQ, initialFilterFc;
@@ -1152,6 +1152,8 @@ static int tsf_load_presets(tsf* res, struct tsf_hydra *hydra, unsigned int font
 									zoneRegion.loop_mode = TSF_LOOPMODE_NONE, zoneRegion.loop_start = zoneRegion.loop_end = 0;
 								else zoneRegion.loop_end--;
 								if (zoneRegion.pitch_keycenter < 0 || zoneRegion.pitch_keycenter > 127) zoneRegion.pitch_keycenter = (pshdr->originalPitch <= 127 ? pshdr->originalPitch : 60); // 255 (unpitched) and the illegal 128-254 mean 60 (7.10)
+								if (zoneRegion.fixedKey > 127) zoneRegion.fixedKey = -1; // an illegal keynum or velocity generator is ignored (10.4)
+								if (zoneRegion.fixedVel < 1 || zoneRegion.fixedVel > 127) zoneRegion.fixedVel = -1;
 								zoneRegion.tune += pshdr->pitchCorrection;
 								zoneRegion.sample_rate = pshdr->sampleRate;
 
@@ -1238,17 +1240,19 @@ static int tsf_decode_sf3_samples(const void* rawBuffer, float** pFloatBuffer, u
 	for (i = 0; i <= shdrLast; i++)
 	{
 		struct tsf_hydra_shdr *shdr = &hydra->shdrs[i];
-		if (shdr->sampleType & 0x30) // compression flags (sometimes Vorbis flag): start and end are byte offsets, the loop is relative
+		if (shdr->sampleType & 0x10) // compressed sample: start and end are byte offsets, the loop is relative
 		{
-			int ok = 0;
-			if (shdr->end <= smplLength && shdr->start < shdr->end && shdr->end - shdr->start >= 4 && TSF_FourCCEquals(smplBuffer + shdr->start, "OggS"))
+			if (shdr->end <= smplLength && shdr->start < shdr->end && shdr->end - shdr->start >= 4)
 			{
 				tsf_u32 start = resNum;
-				ok = tsf_decode_ogg(smplBuffer + shdr->start, smplBuffer + shdr->end, &res, &resNum, &resMax, resInitial);
-				if (!ok) { TSF_FREE(res); return 0; } // out of memory
-				if (ok > 0) { shdr->start = start; shdr->startLoop += start; shdr->endLoop += start; shdr->end = resNum; is_sf3 = 1; }
+				if (!TSF_FourCCEquals(smplBuffer + shdr->start, "OggS") || tsf_decode_ogg(smplBuffer + shdr->start, smplBuffer + shdr->end, &res, &resNum, &resMax, resInitial) <= 0)
+				{
+					TSF_FREE(res);
+					return 0;
+				}
+				shdr->start = start; shdr->startLoop += start; shdr->endLoop += start; shdr->end = resNum; is_sf3 = 1;
 			}
-			if (ok <= 0) shdr->start = shdr->end = shdr->startLoop = shdr->endLoop = 0; // not a valid stream: the sample is left out
+			else shdr->start = shdr->end = shdr->startLoop = shdr->endLoop = 0; // invalid sample header: the sample is left out
 		}
 		else // raw PCM sample (16-bit units; positions are kept as they are until a compressed sample moved them)
 		{
@@ -1798,7 +1802,7 @@ static void tsf_voice_modulate(tsf* f, struct tsf_voice* v, TSF_BOOL init)
 #define TSF_VOICE_SAMPLE(FILTER, OUTPUT, NEXTPOS) \
 	{ \
 		unsigned int pos = (unsigned int)(phase >> 32), nextPos = (NEXTPOS); \
-		int x0 = input[pos]; float val = (float)(x0 * 32768 + (input[nextPos] - x0) * (int)((unsigned int)phase >> 17)); /* linear interpolation in integers with a 15-bit fraction (the gains include 1 / 2^30) */ \
+		int x0 = input[pos], ival = x0 * 32768 + (input[nextPos] - x0) * (int)((unsigned int)phase >> 17); float val = (float)ival; /* linear interpolation in integers with a 15-bit fraction (the gains include 1 / 2^30) */ \
 		FILTER \
 		OUTPUT \
 		gainLeft += stepLeft; gainRight += stepRight; gainMono += stepMono; \
@@ -1816,7 +1820,7 @@ static void tsf_voice_modulate(tsf* f, struct tsf_voice* v, TSF_BOOL init)
 			phase = (phase - phaseLoopEnd < phaseLoopLength ? phase - phaseLoopLength : phaseLoopEnd - phaseLoopLength + (phase - phaseLoopEnd) % phaseLoopLength); \
 	}
 #define TSF_VOICE_LOOP(OUTPUT) /* one loop with the filter, one without, so the test isn't made per sample */ \
-	if (tmpLowpass.active) { TSF_VOICE_LOOP_BODY(val = tsf_voice_lowpass_process(&tmpLowpass, val);, OUTPUT) } \
+	if (tmpLowpass.active) { TSF_VOICE_LOOP_BODY(val = tsf_voice_lowpass_process(&tmpLowpass, (double)ival);, OUTPUT) } \
 	else { TSF_VOICE_LOOP_BODY(, OUTPUT) }
 #define TSF_SEND(P, level, gl, gr) P[0] += val * (gl) * (level); P[1] += val * (gr) * (level); P += 2;
 
@@ -2019,17 +2023,25 @@ static TSF_BOOL tsf_fx_alloc(struct tsf_fx* e, float rate)
 	return TSF_TRUE;
 }
 
-static void tsf_fx_clear(struct tsf_fx* e)
+// Clear delay lines from..to-1 (0-7 combs, 8-11 allpasses: the reverb; 12-13: the chorus)
+static void tsf_fx_clear_lines(struct tsf_fx* e, unsigned int from, unsigned int to)
 {
 	unsigned int i;
-	for (i = 0; i != 14; i++)
+	for (i = from; i != to; i++)
 	{
 		struct tsf_fx_line* l = (i < 8 ? &e->comb[i] : (i < 12 ? &e->allpass[i - 8] : &e->chorus[i - 12]));
 		if (l->data) TSF_MEMSET(l->data, 0, l->length * sizeof(float));
 		l->pos = 0;
 	}
-	TSF_MEMSET(e->combStore, 0, sizeof(e->combStore));
-	e->idle = 0;
+	if (from == 0) TSF_MEMSET(e->combStore, 0, sizeof(e->combStore));
+	if (to > 12) e->chorusPhase = 0.0f; // the chorus LFO starts over too, as on a fresh instance
+}
+
+// Clear both effects: nothing left to play (they start again once a voice sends)
+static void tsf_fx_clear(struct tsf_fx* e)
+{
+	tsf_fx_clear_lines(e, 0, 14);
+	e->idle = 0x40000000;
 }
 
 // Get the effects of f, allocating them if they are about to be enabled
@@ -2244,7 +2256,7 @@ TSFDEF tsf* tsf_load(struct tsf_stream* stream)
 	{
 		#ifdef STB_VORBIS_INCLUDE_STB_VORBIS_H
 		int j = 0; // with no compressed sample (a plain .sf2) the samples are used as they are, like without Vorbis support
-		if (!sampleBuffer) while (j != hydra.shdrNum && !(hydra.shdrs[j].sampleType & 0x30)) j++;
+		if (!sampleBuffer) while (j != hydra.shdrNum && !(hydra.shdrs[j].sampleType & 0x10)) j++;
 		if (!sampleBuffer && j == hydra.shdrNum)
 		{
 			short *s = (short*)rawBuffer, *sEnd = s + (smplCount /= sizeof(short));
@@ -2254,6 +2266,10 @@ TSFDEF tsf* tsf_load(struct tsf_stream* stream)
 		}
 		else if (!sampleBuffer && !tsf_decode_sf3_samples(rawBuffer, &sampleBuffer, &smplCount, &hydra)) goto out_of_memory;
 		else j = -1; // decoded to floats
+		#else
+		int j = 0; // a compressed sample (SF3) can't play without Vorbis support: reject the font
+		while (j != hydra.shdrNum && !(hydra.shdrs[j].sampleType & 0x10)) j++;
+		if (j != hydra.shdrNum) goto done;
 		#endif
 		res = (tsf*)TSF_MALLOC(sizeof(tsf));
 		if (res) TSF_MEMSET(res, 0, sizeof(tsf));
@@ -2409,7 +2425,7 @@ TSFDEF void tsf_set_output(tsf* f, enum TSFOutputMode outputmode, int samplerate
 		TSF_FREE(f->fx->mem);
 		f->fx->mem = TSF_NULL;
 		if (!tsf_fx_alloc(f->fx, newRate)) { TSF_FREE(f->fx); f->fx = TSF_NULL; } // out of memory: no effects
-		else { tsf_fx_clear(f->fx); f->fx->idle = 0x40000000; } // also no filter state from the old rate
+		else tsf_fx_clear(f->fx); // also no filter state from the old rate
 	}
 	f->outputmode = outputmode;
 	f->outSampleRate = newRate;
@@ -2490,7 +2506,7 @@ static int tsf_note_on_channel(tsf* f, int preset_index, int key, float vel, int
 				struct tsf_voice *vOldestPedal = TSF_NULL, *vOldest = TSF_NULL;
 				for (v = f->voices; v != vEnd; v++)
 				{
-					if (!TSF_VOICE_KEYDOWN(v))
+					if (v->ampenv.segment >= TSF_SEGMENT_RELEASE)
 					{
 						float level = v->ampenv.level * tsf_decibelsToGain(v->noteGainDB);
 						if (level < bestLevel) { bestLevel = level; voice = v; }
@@ -2524,8 +2540,8 @@ static int tsf_note_on_channel(tsf* f, int preset_index, int key, float vel, int
 		voice->minLengthLeft = (int)(TSF_MIN_NOTE_LENGTH * f->outSampleRate);
 		voice->portaCents = voice->portaDelta = 0.0f;
 		if (c) voice->portaCents = f->channels->glideCents, voice->portaDelta = f->channels->glideDelta;
-		voice->key = (unsigned char)(region->fixedKey >= 0 && region->fixedKey <= 127 ? region->fixedKey : key);
-		voice->velocity = (unsigned char)(region->fixedVel > 0 && region->fixedVel <= 127 ? region->fixedVel : midiVelocity);
+		voice->key = (unsigned char)(region->fixedKey >= 0 ? region->fixedKey : key);
+		voice->velocity = (unsigned char)(region->fixedVel >= 0 ? region->fixedVel : midiVelocity);
 		voice->keyPressure = 0;
 		voice->noteGainDB = f->globalGainDB + (c ? c->gainDB : 0.0f);
 		voice->lowpass.ic1 = voice->lowpass.ic2 = 0;
@@ -2643,13 +2659,13 @@ TSFDEF void tsf_render_short(tsf* f, short* buffer, int samples, int flag_mixing
 			while (buffer != bufferEnd)
 			{
 				float v = *buffer + *floatSamples++ * 32768.0f;
-				*buffer++ = (short)(v >= 32766.5f ? 32767 : (v <= -32767.5f ? -32768 : (int)(v + (v < 0.0f ? -0.5f : 0.5f)))); // also NaN as 0
+				*buffer++ = (short)(v > -32767.5f ? (v < 32766.5f ? (int)(v + (v < 0.0f ? -0.5f : 0.5f)) : 32767) : (v <= -32767.5f ? -32768 : 0)); // NaN as 0
 			}
 		else
 			while (buffer != bufferEnd)
 			{
 				float v = *floatSamples++ * 32768.0f;
-				*buffer++ = (short)(v >= 32766.5f ? 32767 : (v <= -32767.5f ? -32768 : (int)(v + (v < 0.0f ? -0.5f : 0.5f))));
+				*buffer++ = (short)(v > -32767.5f ? (v < 32766.5f ? (int)(v + (v < 0.0f ? -0.5f : 0.5f)) : 32767) : (v <= -32767.5f ? -32768 : 0));
 			}
 	}
 }
@@ -2704,7 +2720,7 @@ TSFDEF void tsf_render_float(tsf* f, float* buffer, int samples, int flag_mixing
 			else if (f->outputmode == TSF_STEREO_UNWEAVED) for (i = 0; i != block; i++) { out[i] += wetL[i]; out[total + i] += wetR[i]; }
 			else for (i = 0; i != block; i++) out[i] += (wetL[i] + wetR[i]) * 0.70710678f; // the stereo returns' power (mostly uncorrelated)
 			if (sending || peak > TSF_FX_SILENCE) fx->idle = 0;
-			else if ((fx->idle += block) >= idleLimit) { tsf_fx_clear(fx); fx->idle = 0x40000000; } // the tail has died out, start from silence next time
+			else if ((fx->idle += block) >= idleLimit) tsf_fx_clear(fx); // the tail has died out, start from silence next time
 		}
 		if (f->outputmode != TSF_STEREO_UNWEAVED) buffer += block * channels;
 		offset += block; samples -= block;
@@ -2715,19 +2731,23 @@ TSFDEF void tsf_render_float(tsf* f, float* buffer, int samples, int flag_mixing
 #define TSF_FXCLAMP(x) (!((x) > 0.0f) ? 0.0f : ((x) > 1.0f ? 1.0f : (x))) // NaN as 0
 TSFDEF void tsf_set_reverb(tsf* f, int enabled, float room_size, float damping, float width, float wet)
 {
-	struct tsf_fx* fx;
+	struct tsf_fx* fx; TSF_BOOL wasRunning;
 	if (!f) return;
 	if (!(fx = tsf_fx_get(f, enabled))) return;
+	wasRunning = (fx->reverbEnabled && fx->reverbWet > 0.0f);
 	fx->reverbEnabled = (enabled != 0); fx->roomSize = TSF_FXCLAMP(room_size); fx->damping = TSF_FXCLAMP(damping); fx->width = TSF_FXCLAMP(width); fx->reverbWet = TSF_FXCLAMP(wet);
+	if (!wasRunning && fx->reverbEnabled && fx->reverbWet > 0.0f) tsf_fx_clear_lines(fx, 0, 12);
 	tsf_fx_release_if_unused(f);
 }
 
 TSFDEF void tsf_set_chorus(tsf* f, int enabled, float depth, float rate, float wet)
 {
-	struct tsf_fx* fx;
+	struct tsf_fx* fx; TSF_BOOL wasRunning;
 	if (!f) return;
 	if (!(fx = tsf_fx_get(f, enabled))) return;
+	wasRunning = (fx->chorusEnabled && fx->chorusWet > 0.0f);
 	fx->chorusEnabled = (enabled != 0); fx->chorusDepth = TSF_FXCLAMP(depth); fx->chorusRate = (!(rate > 0.0f) ? 0.0f : (rate > 5.0f ? 5.0f : rate)); fx->chorusWet = TSF_FXCLAMP(wet);
+	if (!wasRunning && fx->chorusEnabled && fx->chorusWet > 0.0f) tsf_fx_clear_lines(fx, 12, 14);
 	tsf_fx_release_if_unused(f);
 }
 #undef TSF_FXCLAMP

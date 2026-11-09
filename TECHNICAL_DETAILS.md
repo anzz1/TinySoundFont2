@@ -33,7 +33,7 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
   - The attack is linear in amplitude, so it looks convex on a dB scale.
   - Decay and release are linear in dB. Their times are the time for a 100 dB drop (8.1.2 #36, #38).
   - Release: the release takes at least 10 ms (`TSF_FASTRELEASETIME`), so the default release of 1 ms (−12000 timecents) and other short ones don't click at a note off. Without it, a 1 ms release adds high-frequency energy at the note off that grows as the render block shrinks: 2.5 dB more than a 10 ms release with the default 64-sample block, 17 dB more (a tick on every note off of a sustained sound) with an 8-sample block. The modulation envelope's release stays exact.
-  - The voice ends once the envelope is 100 dB below full scale (8.1.2), including when it would otherwise sustain at that level. A released voice also ends once its total gain (envelope plus attenuation, allowing for the modulation LFO's loudest point) is 100 dB down.
+  - The voice ends once the envelope is 100 dB below full scale (8.1.2), including when it would otherwise sustain at that level. A released voice also ends once its total gain (envelope plus attenuation, allowing for the modulation LFO's loudest point) is 100 dB down. (A note that is already sustaining when a modulator lowers its sustain level that far keeps its voice while the key is down, like a note muted by the volume, and comes back if the level is raised again.)
 - **Modulation envelope:**
   - The attack is convex (8.1.2 #26), using the same curve as the convex modulator source.
   - Decay and release are linear, and their times are for a full-scale change. A release from 50% therefore takes half the release time (8.1.2 #30).
@@ -224,10 +224,12 @@ With `stb_vorbis.c` included before `tsf.h`, two compressed formats load as well
 
 - **SFO** (SFOTool): the whole sample data is one Ogg Vorbis stream in an `smpo` chunk. It decodes to the original sample positions, so every sample header and loop point stays valid.
 - **SF3** (MuseScore layout): each sample is its own Ogg Vorbis stream (sample type flag 0x10, start and end in bytes, loop points relative to the sample start). Samples can also be left as raw PCM in the same file.
-- **Damaged files:** a sample whose stream can't be opened, or whose byte range lies outside the data, is left out (an SFO whose single stream can't be opened fails to load). A truncated stream plays what decodes; regions whose samples lie past that are dropped.
+- **Other codecs:** a font with a compressed sample that isn't an Ogg Vorbis stream stb_vorbis can open is rejected.
+- **Damaged files:** a compressed sample whose sample header points outside the data is left out. A truncated stream plays what decodes; regions whose samples lie past that are dropped.
 - **RIFF padding:** a chunk of odd size, common for compressed data, is followed by a pad byte as RIFF specifies; files written without it (as SFOTool does) load too.
 - **Both stb_vorbis APIs** work: the default pull API and the pushdata-only build (`STB_VORBIS_NO_PULLDATA_API`).
-- **Sample data:** a plain .sf2 loads as it does without Vorbis support, its 16-bit samples used as they are. Compressed fonts are decoded to floats and then converted to 16-bit once while loading, rounded. Lossy compression occasionally decodes a sample slightly beyond full scale; such samples are clipped to full scale, which brings them closer to the original 16-bit samples.
+- **Sample data:** a plain SF2 font loads as it does without Vorbis support, its 16-bit samples used as they are. Compressed fonts are decoded to floats and then converted to 16-bit once while loading, rounded. Lossy compression occasionally decodes a sample slightly beyond full scale; such samples are clipped to full scale, which brings them closer to the original 16-bit samples.
+- **Without `stb_vorbis.c`:** an SFO font is rejected, as is an SF3 if it contains a compressed sample.
 
 ## API arguments
 
@@ -247,6 +249,7 @@ With `stb_vorbis.c` included before `tsf.h`, two compressed formats load as well
 - **`WORDS_BIGENDIAN`:** define it on a big-endian machine, so the little-endian SoundFont data is byte-swapped while loading. GCC and Clang define it automatically.
 - **`TSF_MAX_CHANNELS` (default 4096):** the highest channel number + 1 that the channel functions accept (256 MIDI ports of 16 channels). It also keeps the channel allocation from overflowing on 32-bit systems.
 - **Standard library overrides:** `TSF_NO_STDIO`, `TSF_MALLOC`/`TSF_REALLOC`/`TSF_FREE`, `TSF_MEMCPY`/`TSF_MEMSET`, and the math function overrides.
+- **Fast math:** with `-ffast-math` (or `-ffinite-math-only`, `/fp:fast`) the compiler may assume there are no infinities or NaNs, so the API's checks for infinite and NaN arguments (see [API arguments](#api-arguments)) can be compiled out. Rendering otherwise works the same: the output differs by float rounding, and a modulated generator that is rounded to an integer (cents, sample offsets) can come out one unit apart, which changes the waveform but not the sound.
 
 ## Verification
 

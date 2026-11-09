@@ -1,4 +1,4 @@
-/* TinyMidiLoader2 - v2.006 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
+/* TinyMidiLoader2 - v2.007 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TML_IMPLEMENTATION
@@ -310,9 +310,11 @@ static int tml_parsemessage(tml_message** f, struct tml_parser* p)
 
 	if (p->message_count >= p->message_array_size)
 	{
-		//start allocated memory size of message array at 64, double each time until 8192, then add 1024 entries until done
-		int new_size = p->message_array_size + (!p->message_array_size ? 64 : (p->message_array_size > 4096 ? 1024 : p->message_array_size));
-		tml_message* new_messages = (tml_message*)TML_REALLOC(*f, new_size * sizeof(tml_message));
+		//start allocated memory size of message array at 64, double each time until 8192, then grow by half, trimmed after loading
+		int new_size = p->message_array_size + (!p->message_array_size ? 64 : (p->message_array_size > 4096 ? p->message_array_size / 2 : p->message_array_size));
+		tml_message* new_messages;
+		if (new_size > 0x7FFFFFFF / (int)sizeof(tml_message)) { TML_ERROR("Out of memory"); return -1; } // over 2 GB (the size would wrap on 32-bit)
+		new_messages = (tml_message*)TML_REALLOC(*f, new_size * sizeof(tml_message));
 		if (!new_messages) { TML_ERROR("Out of memory"); return -1; }
 		*f = new_messages;
 		p->message_array_size = new_size;
@@ -481,6 +483,11 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 		t++;
 	}
 	TML_FREE(trackbuf);
+	if (p.message_count < p.message_array_size - p.message_array_size / 8) // give back the unused part of the array (before linking it)
+	{
+		tml_message* trimmed = (tml_message*)TML_REALLOC(messages, p.message_count * sizeof(tml_message));
+		if (trimmed) messages = trimmed;
+	}
 
 	// Change message time signature from delta ticks to actual msec values and link messages ordered by time
 	if (p.message_count > 1)
