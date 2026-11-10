@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.020 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.021 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -3338,7 +3338,7 @@ TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int con
 		case 125 /*OMNI_ON*/         : tsf_channel_release_all(f, channel, c); return 1;
 		case 126 /*MONO_ON*/         : c->monoMode = 1; tsf_channel_release_all(f, channel, c); return 1;
 		case 127 /*POLY_ON*/         : c->monoMode = 0; tsf_channel_release_all(f, channel, c); return 1;
-		case 121 /*ALL_CTRL_OFF*/    : // RP-015: bank, program, volume, pan, effect depths, sound controllers and RPN values (pitch range, tuning) are kept
+		case 121 /*ALL_CTRL_OFF*/    : // RP-015: bank, program, volume, pan, effect depths, sound controllers and the RPN/NRPN data (pitch range, tuning, NRPN values) are kept
 		{
 			int i;
 			c->hold2 = c->sustain = 0;
@@ -3354,9 +3354,7 @@ TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int con
 			c->pitchWheel = 8192;
 			c->midiRPN = 0xFFFF;
 			c->midiData = 0;
-			c->nrpnMSB = 0; c->nrpnSel = 0xFFFF; c->nrpnAcc = 0;
-			TSF_MEMSET(c->nrpn, 0, sizeof(c->nrpn));
-			c->aweSet = 0;
+			c->nrpnMSB = 0; c->nrpnSel = 0xFFFF; c->nrpnAcc = 0; // only the selection: the values set stay
 			c->portaKey = 255;
 			tsf_channel_modulate(f, channel);
 			return 1;

@@ -96,7 +96,7 @@ All of them are implemented except for two deliberate deviations:
 - **Scale:** the spec halves the useful range until it fits 8192 steps. The scale values are 1, 2 or 4 units per step.
 - **Ignored targets:** selecting a generator that is not a real-time parameter, or an unknown one, is ignored: the previous selection stays, as 9.6.2 says. These are the sample offsets, key/velocity ranges, `keynum`, `velocity`, `sampleModes`, `scaleTuning`, `exclusiveClass`, the root key and the unused numbers.
 - **Interaction with RPNs:** selecting an RPN afterwards takes over the data entry. The [AWE32 NRPN](#awe32-nrpn) set (MSB 127) is supported separately. Other NRPN MSB values are ignored.
-- **Reset:** Reset All Controllers (CC121) clears the NRPN offsets.
+- **Reset:** Reset All Controllers (CC121) only deselects the NRPN; the offsets set stay (RP-015). `tsf_reset` clears them.
 
 ## AWE32 NRPN
 
@@ -138,7 +138,7 @@ Creative never published the full unit table; the conversions follow the AWE32 p
 
 - **Verified:** the filter cutoff and Q against the SoundFont-Spec-Test "NRPN test - filter" recordings of an Audigy 2. The resonant peak follows the recorded one from 150 Hz to 8 kHz; the AWE32's own 8-bit filter curve differs and is not emulated.
 - **Not verified on hardware:** the other conversions follow the emux driver, including its reading of the time units as milliseconds.
-- **Reset:** Reset All Controllers (CC121) clears the AWE32 settings.
+- **Reset:** Reset All Controllers (CC121) keeps the AWE32 settings. `tsf_reset` clears them.
 
 ## MIDI channel behavior
 
@@ -166,8 +166,8 @@ Creative never published the full unit table; the conversions follow the AWE32 p
 - **All Notes Off:** CC123 releases the notes, but the pedals keep holding them. The mode messages CC124–127 also act as All Notes Off (MIDI 1.0).
 - **All Sound Off:** CC120 ends the notes with a 10 ms fade instead of a hard cut, to avoid clicks.
 - **Reset All Controllers (CC121)** follows RP-015:
-  - Kept: volume, pan, bank, program, effect depths, sound controllers and the RPN values (pitch range and tuning).
-  - Reset: everything else, including poly pressure, the NRPN offsets and the AWE32 settings.
+  - Kept: volume, pan, bank, program, effect depths, sound controllers and the values set by RPN and NRPN (pitch range, tuning, the NRPN offsets and AWE32 settings).
+  - Reset: everything else, including poly pressure and the RPN/NRPN selection.
 - **Bank select:** works with CC0 alone (GS style) as well as with combined MSB/LSB banks. A CC32 sent alone later keeps the MSB.
 
 ## General MIDI
