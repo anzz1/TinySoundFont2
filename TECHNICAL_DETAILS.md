@@ -180,6 +180,7 @@ Creative never published the full unit table; the conversions follow the AWE32 p
     - the released voice furthest into its release, judged by its level: the envelope falls in dB, so this doesn't favor long release tails, and the volume counts since a released note can't come back;
     - else the oldest note kept by a pedal after its key was let go;
     - else the oldest note.
+  - `tsf_set_max_voices` pre-allocates the set number of voices. Subsequent calls cannot shrink the allocation, only grow it. Same is true if it was previously dynamic (0), the voices already allocated by the dynamic sizing cannot be unallocated.
 - **Channels:** 16 or more. A channel is created by its first message, a note-on included, at preset index 0 and the defaults below.
 - **Messages:** velocity, channel pressure and poly pressure, and pitch bend (±2 semitones by default).
 - **Controllers:** CC1, 7, 10, 11, 64, 121 and 123.
@@ -233,7 +234,7 @@ With `stb_vorbis.c` included before `tsf.h`, two compressed formats load as well
 
 ## API arguments
 
-- **Out of range values:** channel numbers outside 0 to `TSF_MAX_CHANNELS` - 1 and preset indices that don't exist are rejected. Controller values are clamped to 0–127, the pitch wheel to 0–16383, pressure to 0–127.
+- **Out of range values:** channel numbers outside 0 to `TSF_MAX_CHANNELS` - 1, preset indices that don't exist, keys and controller numbers outside 0–127, banks outside 0–16383 and a negative voice limit are rejected. Controller values are clamped to 0–127, the pitch wheel to 0–16383, pressure to 0–127.
 - **Velocity:** 0, a negative value or NaN is a note off; any positive velocity plays, at MIDI velocity 1 or more.
 - **Float arguments:** an infinite or NaN pan, volume, pitch range, tuning or gain is ignored. The global gain is kept between −200 and +100 dB, so changing it back restores the sounding notes exactly. A volume of 0 is −200 dB, so a muted channel stays silent under any global gain. Effect settings are clamped (NaN as 0).
 - **Pitch:** the playback speed is capped at 2^23 times the sample rate, so no tuning can overflow the 32.32 fixed-point position.

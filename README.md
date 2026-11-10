@@ -26,11 +26,11 @@ The library code is based on [SFZero by Steve Folta](https://github.com/stevefol
 
 ## Documentation
 
-The API documentation can be found on [top of the library source code](https://github.com/anzz1/TinySoundFont/blob/master/tsf.h).
+The API documentation can be found on [top of the library source code](https://github.com/anzz1/TinySoundFont2/blob/master/tsf.h).
 
-There are also [examples available](https://github.com/anzz1/TinySoundFont/tree/master/examples) which come with a sample SoundFont file and build and play sound on Win32, Win64, Linux and MacOSX with no further dependencies.
+There are also [examples available](https://github.com/anzz1/TinySoundFont2/tree/master/examples) which come with a sample SoundFont file and build and play sound on Win32, Win64, Linux and MacOSX with no further dependencies.
 
-In-depth technical details available in [TECHNICAL_DETAILS.md](https://github.com/anzz1/TinySoundFont/tree/master/TECHNICAL_DETAILS.md).
+In-depth technical details available in [TECHNICAL_DETAILS.md](https://github.com/anzz1/TinySoundFont2/tree/master/TECHNICAL_DETAILS.md).
 
 ## Dependencies
 

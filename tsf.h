@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.021 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.022 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -194,8 +194,9 @@ TSFDEF void tsf_reset_effects(tsf* f);
 // so don't keep this number too low or otherwise sounds may not play.
 // When the limit is reached a new note takes the released voice furthest into its release, else the oldest note held only by a
 // pedal, else the oldest note.
-//   max_voices: maximum number to pre-allocate and set the limit to
-//   (tsf_set_max_voices returns 0 if allocation failed, otherwise 1)
+//   max_voices: maximum number to pre-allocate and set the limit to (a number below the current one keeps the old number),
+//               or 0 for dynamic polyphony (default, the pool grows as needed)
+//   (tsf_set_max_voices returns 0 if max_voices is negative or allocation failed, otherwise 1)
 TSFDEF int tsf_set_max_voices(tsf* f, int max_voices);
 
 // Number of voice slots (valid voice_index values for tsf_get_voice_effects)
@@ -210,13 +211,13 @@ TSFDEF int tsf_get_voice_effects(const tsf* f, int voice_index, float* chorus_se
 //   vel: velocity as a float between 0.0 (equal to note off) and 1.0 (full)
 //   bank: instrument bank number (alternative to preset_index)
 //   preset_number: preset number (alternative to preset_index)
-//   (tsf_note_on returns 0 if the allocation of a new voice failed, otherwise 1)
-//   (tsf_bank_note_on returns 0 if preset does not exist or allocation failed, otherwise 1)
+//   (tsf_note_on returns 0 if the preset index or key is invalid or the allocation of a new voice failed, otherwise 1)
+//   (tsf_bank_note_on returns 0 if preset does not exist, the key is invalid or allocation failed, otherwise 1)
 TSFDEF int tsf_note_on(tsf* f, int preset_index, int key, float vel);
 TSFDEF int tsf_bank_note_on(tsf* f, int bank, int preset_number, int key, float vel);
 
 // Stop playing a note started with tsf_note_on/tsf_bank_note_on (no channel)
-//   (bank_note_off returns 0 if preset does not exist, otherwise 1)
+//   (bank_note_off returns 0 if preset does not exist or the key is invalid, otherwise 1)
 TSFDEF void tsf_note_off(tsf* f, int preset_index, int key);
 TSFDEF int  tsf_bank_note_off(tsf* f, int bank, int preset_number, int key);
 
@@ -271,7 +272,7 @@ TSFDEF int tsf_channel_set_sostenuto(tsf* f, int channel, int flag_sostenuto);
 //   channel: channel number
 //   key: note value between 0 and 127 (60 being middle C)
 //   vel: velocity as a float between 0.0 (equal to note off) and 1.0 (full)
-//   (tsf_channel_note_on returns 0 on allocation failure of new voice, otherwise 1)
+//   (tsf_channel_note_on returns 0 for an invalid channel or key, or on allocation failure of new voice, otherwise 1)
 TSFDEF int tsf_channel_note_on(tsf* f, int channel, int key, float vel);
 TSFDEF void tsf_channel_note_off(tsf* f, int channel, int key);
 TSFDEF void tsf_channel_note_off_all(tsf* f, int channel); //end with sustain and release (pedals do not keep the notes, CC123 does wait for them)
@@ -281,7 +282,7 @@ TSFDEF void tsf_channel_sounds_off_all(tsf* f, int channel); //end quickly (10 m
 // (the SoundFont's modulators handle volume, expression, pan, modulation wheel, ...). Bank select, RPN/data entry,
 // data increment/decrement, sustain, hold 2, sostenuto, soft pedal, legato footswitch, portamento and the channel mode controllers
 // 120/121/123-127 are additionally handled directly.
-//    (tsf_channel_midi_control returns 0 on allocation failure of new channel, otherwise 1)
+//    (tsf_channel_midi_control returns 0 for an invalid channel or controller number, or on allocation failure of new channel, otherwise 1)
 TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int control_value);
 
 // Get current values set on the channels
@@ -2440,7 +2441,8 @@ TSFDEF int tsf_set_max_voices(tsf* f, int max_voices)
 	int i = f->voiceNum;
 	int newVoiceNum = (f->voiceNum > max_voices ? f->voiceNum : max_voices);
 	struct tsf_voice *newVoices;
-	if (newVoiceNum > 0x7FFFFFFF / (int)sizeof(struct tsf_voice)) return 0; // over 2 GB (the allocation size would wrap on 32-bit)
+	if (max_voices == 0) { f->maxVoiceNum = 0; return 1; } // dynamic polyphony (the voices already allocated stay)
+	if (max_voices < 0 || newVoiceNum > 0x7FFFFFFF / (int)sizeof(struct tsf_voice)) return 0; // over 2 GB (the allocation size would wrap on 32-bit)
 	newVoices = (struct tsf_voice*)TSF_REALLOC(f->voices, newVoiceNum * sizeof(struct tsf_voice));
 	if (!newVoices) return 0;
 	f->voices = newVoices;
@@ -2460,7 +2462,7 @@ static int tsf_note_on_channel(tsf* f, int preset_index, int key, float vel, int
 	unsigned int voicePlayIndex;
 	struct tsf_region *region, *regionEnd;
 
-	if (key < 0 || key > 127 || preset_index < 0 || preset_index >= f->presetNum) return 1;
+	if (key < 0 || key > 127 || preset_index < 0 || preset_index >= f->presetNum) return 0;
 	if (!(vel > 0.0f)) { tsf_note_off(f, preset_index, key); return 1; } // also NaN
 	midiVelocity = (short)(vel >= 1.0f ? 127 : (vel < 1.5f / 127 ? 1 : vel * 127 + 0.5f)); // a note on has a velocity of at least 1
 
@@ -2615,7 +2617,7 @@ TSFDEF void tsf_note_off(tsf* f, int preset_index, int key)
 TSFDEF int tsf_bank_note_off(tsf* f, int bank, int preset_number, int key)
 {
 	int preset_index = tsf_get_presetindex(f, bank, preset_number);
-	if (preset_index == -1) return 0;
+	if (preset_index == -1 || key < 0 || key > 127) return 0;
 	tsf_note_off(f, preset_index, key);
 	return 1;
 }
@@ -2872,7 +2874,7 @@ TSFDEF int tsf_channel_set_presetnumber(tsf* f, int channel, int preset_number, 
 
 TSFDEF int tsf_channel_set_bank(tsf* f, int channel, int bank)
 {
-	struct tsf_channel *c = tsf_channel_init(f, channel);
+	struct tsf_channel *c = (bank < 0 || bank > 16383 ? TSF_NULL : tsf_channel_init(f, channel));
 	if (!c) return 0;
 	c->bank = (unsigned short)bank;
 	return 1;
@@ -3091,14 +3093,14 @@ TSFDEF int tsf_channel_note_on(tsf* f, int channel, int key, float vel)
 	struct tsf_channel* c;
 	int res;
 	float restartVel;
+	if (key < 0 || key > 127) return 0;
 	if (!(vel > 0.0f)) // also NaN
 	{
 		tsf_channel_note_off(f, channel, key);
-		return 1;
+		return ((unsigned)channel < TSF_MAX_CHANNELS);
 	}
 	c = tsf_channel_init(f, channel); // a note on a channel that wasn't set up yet plays its default preset
 	if (!c) return 0;
-	if (key < 0 || key > 127) return 1;
 	cs = f->channels;
 	if (c->monoMode || c->cc[68] >= 64) // mono mode or legato footswitch
 	{
@@ -3227,7 +3229,7 @@ TSFDEF int tsf_channel_set_pressure(tsf* f, int channel, int pressure)
 TSFDEF int tsf_channel_set_poly_pressure(tsf* f, int channel, int key, int key_pressure)
 {
 	struct tsf_voice *v, *vEnd;
-	struct tsf_channel *c = tsf_channel_init(f, channel);
+	struct tsf_channel *c = (key < 0 || key > 127 ? TSF_NULL : tsf_channel_init(f, channel));
 	if (!c) return 0;
 	key_pressure = (key_pressure < 0 ? 0 : (key_pressure > 127 ? 127 : key_pressure));
 	for (v = f->voices, vEnd = v ? v + f->voiceNum : TSF_NULL; v != vEnd; v++)
@@ -3266,12 +3268,11 @@ static int tsf_channel_data_value(const struct tsf_channel* c)
 
 TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int control_value)
 {
-	struct tsf_channel* c = tsf_channel_init(f, channel);
+	struct tsf_channel* c = ((unsigned)controller > 127 ? TSF_NULL : tsf_channel_init(f, channel));
 	unsigned char prev;
 	if (!c) return 0;
 	if (control_value < 0) control_value = 0; else if (control_value > 127) control_value = 127; // MIDI data bytes are 7 bit
-	prev = c->cc[controller & 127];
-	if ((unsigned)controller < 128)
+	prev = c->cc[controller];
 	{
 		TSF_BOOL changed = (c->cc[controller] != (unsigned char)control_value);
 		if (controller - 1u < 31u && controller != 6 && c->cc[controller + 32]) c->cc[controller + 32] = 0, changed = TSF_TRUE; // MIDI 1.0: an MSB sets the LSB to zero
