@@ -1,4 +1,4 @@
-/* TinyMidiLoader2 - v2.007 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
+/* TinyMidiLoader2 - v2.008 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TML_IMPLEMENTATION
@@ -366,6 +366,13 @@ static int tml_parsemessage(tml_message** f, struct tml_parser* p)
 			default:
 				evt->type = 0;
 		}
+	}
+	else if (status > 0xF0) // system common or real-time (not allowed in a MIDI file): skip its data bytes so the track stays in step
+	{
+		int len = (status == 0xF2 ? 2 : (status == 0xF1 || status == 0xF3 ? 1 : 0));
+		if (len > p->buf_end - p->buf) { TML_WARN("Unexpected end of file"); p->buf = p->buf_end; return -1; }
+		p->buf += len;
+		evt->type = 0;
 	}
 	else //channel message
 	{
