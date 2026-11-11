@@ -1,4 +1,4 @@
-/* TinyMidiLoader2 - v2.008 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
+/* TinyMidiLoader2 - v2.009 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TML_IMPLEMENTATION
@@ -426,6 +426,25 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 
 	// Parse MIDI header
 	if (stream->read(stream->data, midi_header, 14) != 14) { TML_ERROR("Unexpected end of file"); return messages; }
+	if (midi_header[0] == 'R' && midi_header[1] == 'I' && midi_header[2] == 'F' && midi_header[3] == 'F' && midi_header[8] == 'R' && midi_header[9] == 'M' && midi_header[10] == 'I' && midi_header[11] == 'D')
+	{
+		// RIFF RMID (.rmi): the MIDI file is in the "data" chunk, other chunks before it are skipped
+		unsigned char ck[8];
+		unsigned int n, k;
+		ck[0] = midi_header[12]; ck[1] = midi_header[13];
+		if (stream->read(stream->data, ck + 2, 6) != 6) { TML_ERROR("Unexpected end of file"); return messages; }
+		while (ck[0] != 'd' || ck[1] != 'a' || ck[2] != 't' || ck[3] != 'a')
+		{
+			n = ((unsigned)ck[7] << 24) | ((unsigned)ck[6] << 16) | ((unsigned)ck[5] << 8) | ck[4];
+			for (n += n & 1; n; n -= k) // chunks are padded to an even size
+			{
+				k = (n < 14 ? n : 14);
+				if (stream->read(stream->data, midi_header, k) != (int)k) { TML_ERROR("Unexpected end of file"); return messages; }
+			}
+			if (stream->read(stream->data, ck, 8) != 8) { TML_ERROR("Unexpected end of file"); return messages; }
+		}
+		if (stream->read(stream->data, midi_header, 14) != 14) { TML_ERROR("Unexpected end of file"); return messages; }
+	}
 	header_length = ((unsigned)midi_header[4] << 24) | ((unsigned)midi_header[5] << 16) | ((unsigned)midi_header[6] << 8) | midi_header[7];
 	if (midi_header[0] != 'M' || midi_header[1] != 'T' || midi_header[2] != 'h' || midi_header[3] != 'd' ||
 		header_length < 6 || header_length > 0x10000 || midi_header[8] || midi_header[9] > 2) { TML_ERROR("Doesn't look like a MIDI file: invalid MThd header"); return messages; }
