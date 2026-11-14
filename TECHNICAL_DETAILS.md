@@ -37,7 +37,8 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
 - **Modulation envelope:**
   - The attack is convex (8.1.2 #26), using the same curve as the convex modulator source.
   - Decay and release are linear, and their times are for a full-scale change. A release from 50% therefore takes half the release time (8.1.2 #30).
-- **Times** are converted from timecents exactly: the minimum and default of −12000 is 1 ms (8.1.3, 8.5), so the default attack ramps in over 1 ms instead of starting with a step.
+- **Times** are converted from timecents exactly: the minimum and default of −12000 is 1 ms (8.1.3, 8.5), so the default attack ramps in over 1 ms instead of starting with a step. The default delay is 1 ms as well: with the defaults a note starts 1 ms after the note on and reaches its level 1 ms later.
+  - **The sample starts when the volume envelope's delay ends,** not at the note on: a delayed layer (an echo) plays from its beginning, and a short one-shot sample isn't used up silently during a delay longer than itself. The spec doesn't say; the LFOs and the modulation envelope keep their timing from the note on.
   - **−32768 means zero time** for the delays (both LFOs and both envelopes), attacks and holds, as 8.1.2 says by convention. It counts as such when the preset and instrument values and the modulators add up to −32768 or less (the hold after its key number scaling). Decay and release have no such convention, so −32768 there is clamped to 1 ms.
 - **Key number scaling** of hold and decay is applied in timecents before the conversion to seconds.
 - **Modulated decay, sustain and release:** the decay time, sustain level and release time are real-time generators, so a modulator or NRPN that changes them applies to sounding notes. A note in its decay goes on from its current level with the new slope down to the new sustain level; if it is already at or below that level, it sustains at it at once. A sustaining note moves to the new level. A releasing note goes on from its current level at the new release rate, except for the quick 10 ms fades (All Sound Off, exclusive class), which stay quick.
@@ -199,6 +200,7 @@ Creative never published the full unit table; the conversions follow the AWE32 p
 - **Effect sends:** the `chorusEffectsSend` and `reverbEffectsSend` generators and the CC91/CC93 modulators are evaluated per voice. `tsf_get_voice_effects` reads them, which can drive an external effects unit.
 - **Built-in effects:** a Freeverb-style reverb and a stereo chorus.
   - They are enabled by default and use about 66 KB of memory at 44.1 kHz.
+  - The delay lines are sized for the output sample rate and the reverb's damping filter keeps its cutoff, so the reverb sounds the same at every rate.
   - Disabling both with `tsf_set_reverb` and `tsf_set_chorus` frees that memory.
 - **CPU use only while needed:**
   - Voices that send nothing take a render path without send buffers.
@@ -210,9 +212,10 @@ Creative never published the full unit table; the conversions follow the AWE32 p
 
 - **Sample data:** kept as 16-bit integers as in the font, half the memory of floats.
 - **Interpolation:** linear, with the playback position as a 32.32 fixed-point number. It runs in integers with a 15-bit fraction and converts only the result to float (the 1/2^30 scale is part of the gains), which is faster than converting both samples. Compared with interpolating in floats, the difference is about −100 dB, below the 16-bit rounding noise of the samples themselves.
-- **Block processing:** envelopes, LFOs, filter coefficients and pitch are updated every 64 samples (`TSF_RENDER_EFFECTSAMPLEBLOCK`). The gain ramps linearly within each block, which avoids zipper noise and clicks.
-- **Silent blocks:** during an envelope delay or at zero volume, a voice that bypasses the filter skips interpolation and only advances its position.
+- **Block processing:** envelopes, LFOs, filter coefficients and pitch are updated every 64 samples (`TSF_RENDER_EFFECTSAMPLEBLOCK`). The gain ramps linearly within each block, which avoids zipper noise and clicks. A block is split where the volume envelope's delay or attack ends, so both end at their exact sample whatever the block size and sample rate.
+- **Silent blocks:** during the volume envelope's delay a voice renders nothing, and at zero volume a voice that bypasses the filter skips interpolation and only advances its position.
 - **Inner loop:** within a block, the samples that can't reach the loop end or the sample end are rendered as one run without the end test and the loop wrap. There is one loop with the filter and one without, so voices that bypass the filter don't test for it per sample. A step longer than the loop (a short loop played very high) still wraps into the loop.
+- **Controller changes:** a controller, pitch wheel or pressure message re-evaluates the modulators of the channel's sounding notes. Only the generators that have a modulator (or NRPN) output are added up and clamped again; the others keep their value. Which generators of a zone lie outside their range without any modulator, and so need the clamping every time, is found when the font loads.
 - **Filter precision:** the filter runs in double precision. Single precision would be about 10% faster on filtered voices, with an error 100–140 dB below the signal without resonance, but only 67–80 dB below it with a high resonance (30–96 dB) at low cutoffs.
 - **Effects:** each comb, allpass and chorus line runs over the whole effects block with its state in local variables, the four combs of a side together so their feedback paths overlap.
 - **Sample buffer:** it has one extra zero sample at the end, so interpolation never reads past the sample data.
