@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.023 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.024 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -413,7 +413,16 @@ typedef unsigned char tsf_u8;
 typedef unsigned short tsf_u16;
 typedef signed short tsf_s16;
 typedef unsigned int tsf_u32;
+#if defined(_MSC_VER)
+typedef unsigned __int64 tsf_u64;
+typedef signed __int64 tsf_s64;
+#elif defined(_LP64) || defined(__LP64__)
+typedef unsigned long tsf_u64;
+typedef signed long tsf_s64;
+#else
 typedef unsigned long long tsf_u64;
+typedef signed long long tsf_s64;
+#endif
 typedef char tsf_char20[20];
 
 #if !defined(WORDS_BIGENDIAN) && defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -1004,7 +1013,7 @@ static int tsf_hydra_clamp_end(int start, int end, int limit)
 	return (end < start ? start : (end > limit ? limit : end));
 }
 
-static unsigned int tsf_addr_clamp(long long pos, unsigned int lo, unsigned int hi) { return (unsigned int)(pos < lo ? lo : (pos > hi ? hi : pos)); }
+static unsigned int tsf_addr_clamp(tsf_s64 pos, unsigned int lo, unsigned int hi) { return (unsigned int)(pos < lo ? lo : (pos > hi ? hi : pos)); }
 
 // Generators that are only allowed at the instrument level (sample generators, substitution generators, 8.5), ignored in presets
 static TSF_BOOL tsf_gen_instrument_only(tsf_u16 g) { return (g <= 4 || g == 12 || g == 45 || g == 46 || g == 47 || g == 50 || g == 54 || g == 57 || g == 58); }
@@ -1147,7 +1156,7 @@ static int tsf_load_presets(tsf* res, struct tsf_hydra *hydra, unsigned int font
 								// Sample positions: the header's points plus the address offset generators (fine + 32768 * coarse), kept inside the
 								// sample data. The end is exclusive (the first of the zero points after the sample), the loop end is made inclusive.
 								{
-									#define TSF_ADDR(base, i) tsf_addr_clamp((long long)(base) + zoneRegion.addrOfs[i] + 32768LL * zoneRegion.addrOfs[(i) + 4], pshdr->start, pshdr->end)
+									#define TSF_ADDR(base, i) tsf_addr_clamp((tsf_s64)(base) + zoneRegion.addrOfs[i] + (tsf_s64)32768 * zoneRegion.addrOfs[(i) + 4], pshdr->start, pshdr->end)
 									zoneRegion.offset     = TSF_ADDR(pshdr->start, 0);
 									zoneRegion.end        = TSF_ADDR(pshdr->end, 1);
 									zoneRegion.loop_start = TSF_ADDR(pshdr->startLoop, 2);
@@ -1817,29 +1826,28 @@ static void tsf_voice_modulate(tsf* f, struct tsf_voice* v, TSF_BOOL init)
 // One block of samples of a voice: interpolation, low-pass filter, output (OUTPUT is the statement(s) writing val to the buffers)
 // The gains ramp linearly over the block from the envelope/LFO state at its start to the state at its end (no zipper noise)
 // Voices that send to the effects use a second copy of the loops so the others pay nothing for it
-#define TSF_VOICE_SAMPLE(FILTER, OUTPUT, NEXTPOS) \
+#define TSF_VOICE_SAMPLE(VAL, OUTPUT, NEXTPOS) \
 	{ \
 		unsigned int pos = (unsigned int)(phase >> 32), nextPos = (NEXTPOS); \
-		int x0 = input[pos], ival = x0 * 32768 + (input[nextPos] - x0) * (int)((unsigned int)phase >> 17); float val = (float)ival; /* linear interpolation in integers with a 15-bit fraction (the gains include 1 / 2^30) */ \
-		FILTER \
+		int x0 = input[pos], ival = x0 * 32768 + (input[nextPos] - x0) * (int)((unsigned int)phase >> 17); float val = VAL; /* linear interpolation in integers with a 15-bit fraction (the gains include 1 / 2^30) */ \
 		OUTPUT \
 		gainLeft += stepLeft; gainRight += stepRight; gainMono += stepMono; \
 		phase += phaseStep; \
 	}
 /* The samples that can't reach the loop end or the sample end are rendered as one run, without the end test and the loop wrap */
-#define TSF_VOICE_LOOP_BODY(FILTER, OUTPUT) \
+#define TSF_VOICE_LOOP_BODY(VAL, OUTPUT) \
 	while (blockSamples > 0 && phase < phaseEnd) \
 	{ \
 		int run = blockSamples; \
 		if (phase + phaseStep * (tsf_u64)blockSamples > phaseSafe) run = (phase < phaseSafe && phaseStep ? (int)((phaseSafe - phase - 1) / phaseStep) + 1 : 0); \
-		if (run) { blockSamples -= run; while (run--) TSF_VOICE_SAMPLE(FILTER, OUTPUT, pos + 1) } \
-		else { blockSamples--; TSF_VOICE_SAMPLE(FILTER, OUTPUT, (pos >= tmpLoopEnd && isLooping ? tmpLoopStart : pos + 1)) } \
+		if (run) { blockSamples -= run; while (run--) TSF_VOICE_SAMPLE(VAL, OUTPUT, pos + 1) } \
+		else { blockSamples--; TSF_VOICE_SAMPLE(VAL, OUTPUT, (pos >= tmpLoopEnd && isLooping ? tmpLoopStart : pos + 1)) } \
 		if (phase >= phaseLoopEnd && isLooping) /* wrap into the loop, also when a step is longer than the loop */ \
 			phase = (phase - phaseLoopEnd < phaseLoopLength ? phase - phaseLoopLength : phaseLoopEnd - phaseLoopLength + (phase - phaseLoopEnd) % phaseLoopLength); \
 	}
 #define TSF_VOICE_LOOP(OUTPUT) /* one loop with the filter, one without, so the test isn't made per sample */ \
-	if (tmpLowpass.active) { TSF_VOICE_LOOP_BODY(val = tsf_voice_lowpass_process(&tmpLowpass, (double)ival);, OUTPUT) } \
-	else { TSF_VOICE_LOOP_BODY(, OUTPUT) }
+	if (tmpLowpass.active) { TSF_VOICE_LOOP_BODY(tsf_voice_lowpass_process(&tmpLowpass, (double)ival), OUTPUT) } \
+	else { TSF_VOICE_LOOP_BODY((float)ival, OUTPUT) }
 #define TSF_SEND(P, level, gl, gr) P[0] += val * (gl) * (level); P[1] += val * (gr) * (level); P += 2;
 
 // Playback speed as a 32.32 fixed point step per output sample, at most 2^23 times faster (NaN plays at that rate too). With the
@@ -2578,10 +2586,10 @@ static int tsf_note_on_channel(tsf* f, int preset_index, int key, float vel, int
 		// Offset/end/loop, moved by the address offset modulators (evaluated once at note on)
 		{
 			const int *a = voice->mr.addrOfs, *b = region->addrOfs;
-			long long st = region->offset     + (a[0] - b[0]) + 32768LL * (a[4] - b[4]);
-			long long en = region->end        + (a[1] - b[1]) + 32768LL * (a[5] - b[5]);
-			long long ls = region->loop_start + (a[2] - b[2]) + 32768LL * (a[6] - b[6]);
-			long long le = region->loop_end   + (a[3] - b[3]) + 32768LL * (a[7] - b[7]);
+			tsf_s64 st = region->offset     + (a[0] - b[0]) + (tsf_s64)32768 * (a[4] - b[4]);
+			tsf_s64 en = region->end        + (a[1] - b[1]) + (tsf_s64)32768 * (a[5] - b[5]);
+			tsf_s64 ls = region->loop_start + (a[2] - b[2]) + (tsf_s64)32768 * (a[6] - b[6]);
+			tsf_s64 le = region->loop_end   + (a[3] - b[3]) + (tsf_s64)32768 * (a[7] - b[7]);
 			if (st < region->sample_start) st = region->sample_start; else if (st >= region->sample_end) st = region->sample_end - 1;
 			if (en > region->sample_end) en = region->sample_end; else if (en <= st) en = st + 1;
 			if (ls < region->sample_start) ls = region->sample_start; // loop points are kept inside the sample like at load time
