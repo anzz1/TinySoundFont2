@@ -1,0 +1,28 @@
+<!doctype html>
+<body>
+<button id="play" disabled>Play</button>
+<script type="module">
+  import { midiReady, playMidi, stopMidi, midiPlaying, setMidiVolume } from './tinymidipcm.js';
+
+  const btn = document.getElementById('play');
+
+  window.addEventListener('tinymidipcm:ready', function () { btn.disabled = false; });
+  window.addEventListener('tinymidipcm:ended', function () { btn.textContent = 'Play'; })
+  if (midiReady()) btn.disabled = false;
+
+  btn.onclick = async function () {
+    if (midiPlaying()) {
+      stopMidi();
+      btn.textContent = 'Play';
+    } else {
+      await window.audioContext.resume();
+
+      const res = await fetch('D_E1M1.MID');
+      const midi = new Uint8Array(await res.arrayBuffer());
+      playMidi(midi, 0.56, false, false); // data, volume, loop, fade
+      btn.textContent = 'Stop';
+    }
+  };
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+CC = emcc
+SRC = tinymidipcm.c
+CFLAGS = -Wall -O2
+LDFLAGS = -s ENVIRONMENT=web -s EXPORT_ES6=1 -s MODULARIZE=1 -s EXPORT_NAME=loadTinyMidiPCM
+LDFLAGS += -s EXPORTED_FUNCTIONS="[_tsf_load_memory,_tsf_set_output,_tsf_channel_set_bank_preset,_tsf_reset,_tsf_close,_tml_load_memory,_tml_free,_midi_render,_malloc,_realloc,_free]"
+LDFLAGS += -s EXPORTED_RUNTIME_METHODS="[setValue,getValue,HEAPU8]"
+LDFLAGS += -s ALLOW_MEMORY_GROWTH=1
+LDFLAGS += -s ASSERTIONS=0
+OBJ = $(SRC:.c=.o)
+
+tinymidipcm.mjs: $(OBJ)
+	$(CC) -o $@ $^ $(CFLAGS) $(LDFLAGS)
+
+all: tinymidipcm.mjs
+
+clean:
+	rm -f *.wasm *.o *.wasm.temp* *.wasm.tmp* tinymidipcm.mjs
